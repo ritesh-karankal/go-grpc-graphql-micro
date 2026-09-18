@@ -19,7 +19,7 @@ func (r *accountResolver) Orders(ctx context.Context, obj *Account) ([]*Order, e
 		return nil, err
 	}
 
-	var orders []*Order
+	orders := make([]*Order, 0, len(orderList))
 	for _, o := range orderList {
 		var products []*OrderedProduct
 		for _, p := range o.Products {
