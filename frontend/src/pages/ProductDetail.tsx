@@ -4,7 +4,7 @@ import { ArrowLeft, Minus, Plus, ShoppingBag, Check } from "lucide-react";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { graphqlRequest, queries } from "../lib/graphql";
 import { useCart, formatPrice } from "../lib/cart";
-import { productImage } from "../lib/utils";
+import { productImage, productImageUrl } from "../lib/utils";
 import type { Product } from "../types";
 
 export function ProductDetail() {
@@ -47,6 +47,7 @@ export function ProductDetail() {
   }
 
   const gradient = productImage(product.name);
+  const imageUrl = productImageUrl(product.name);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
@@ -62,10 +63,18 @@ export function ProductDetail() {
         <div
           className={`relative flex aspect-square items-center justify-center overflow-hidden rounded-3xl bg-gradient-to-br ${gradient}`}
         >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_50%)]" />
-          <span className="relative font-serif text-[12rem] leading-none text-ink/15">
-            {product.name.charAt(0).toUpperCase()}
-          </span>
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={product.name}
+              className="absolute inset-0 h-full w-full object-cover"
+            />
+          ) : (
+            <span className="relative font-serif text-[12rem] leading-none text-ink/15">
+              {product.name.charAt(0).toUpperCase()}
+            </span>
+          )}
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/15 to-transparent" />
         </div>
 
         <div className="flex flex-col justify-center">

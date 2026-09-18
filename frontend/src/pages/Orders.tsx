@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ClipboardList, Loader2 } from "lucide-react";
 import { useCart, formatPrice } from "../lib/cart";
 import { graphqlRequest, queries } from "../lib/graphql";
-import { formatDate } from "../lib/utils";
+import { formatDate, productImage, productImageUrl } from "../lib/utils";
 import { EmptyState } from "../components/EmptyState";
 import type { Account, Order } from "../types";
 
@@ -87,12 +87,29 @@ export function Orders() {
                 {order.products.map((product) => (
                   <li
                     key={`${order.id}-${product.id}`}
-                    className="flex justify-between py-3 text-sm"
+                    className="flex items-center justify-between gap-4 py-3 text-sm"
                   >
-                    <span>
-                      {product.name}{" "}
-                      <span className="text-muted">&times; {product.quantity}</span>
-                    </span>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div
+                        className={`relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br ${productImage(product.name)}`}
+                      >
+                        {productImageUrl(product.name) ? (
+                          <img
+                            src={productImageUrl(product.name)}
+                            alt={product.name}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <span className="font-serif text-lg text-ink/20">
+                            {product.name.charAt(0).toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                      <span className="truncate">
+                        {product.name}{" "}
+                        <span className="text-muted">&times; {product.quantity}</span>
+                      </span>
+                    </div>
                     <span className="font-medium">
                       {formatPrice(product.price * product.quantity)}
                     </span>

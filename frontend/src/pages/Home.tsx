@@ -9,18 +9,18 @@ import type { Product } from "../types";
 const features = [
   {
     icon: Truck,
-    title: "Fast Delivery",
-    description: "Orders processed instantly through our microservices backend.",
+    title: "Considered delivery",
+    description: "A clear, dependable journey from our collection to your door.",
   },
   {
     icon: Shield,
-    title: "Secure Checkout",
-    description: "Account validation and product verification on every order.",
+    title: "Quietly secure",
+    description: "A straightforward checkout designed to keep your details protected.",
   },
   {
     icon: RefreshCw,
-    title: "Real-time Catalog",
-    description: "Product search powered by Elasticsearch for instant results.",
+    title: "Always in reach",
+    description: "Find the right piece quickly with a responsive, living collection.",
   },
 ];
 
@@ -41,21 +41,26 @@ export function Home() {
   return (
     <div>
       <section className="relative overflow-hidden bg-ink text-white">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_50%,rgba(52,211,153,0.15),transparent_50%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_20%,rgba(255,255,255,0.05),transparent_40%)]" />
-        <div className="relative mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-28 lg:px-8">
+        <img
+          src="/assets/images/header.jpg"
+          alt="A considered workspace with displays, speakers, and desk accessories"
+          className="absolute inset-0 h-full w-full object-cover object-[68%_center] grayscale contrast-110 brightness-75 sm:object-[72%_center]"
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(15,23,42,0.98)_0%,rgba(15,23,42,0.9)_35%,rgba(15,23,42,0.48)_62%,rgba(15,23,42,0.28)_100%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(15,23,42,0.58),transparent_45%)]" />
+        <div className="relative mx-auto flex min-h-[620px] max-w-7xl items-end px-4 py-16 sm:px-6 sm:py-20 lg:px-8 lg:py-24">
           <div className="max-w-2xl">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-1.5 text-sm backdrop-blur">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-1.5 text-sm backdrop-blur-md">
               <Sparkles className="h-4 w-4 text-brand-400" />
-              Powered by GraphQL Microservices
+              The Meridian edit / 2026
             </div>
             <h1 className="mt-6 font-serif text-5xl leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
               Curated goods for{" "}
               <span className="italic text-brand-400">modern</span> living
             </h1>
-            <p className="mt-6 text-lg leading-relaxed text-slate-300">
-              Discover thoughtfully selected products with seamless search, cart,
-              and checkout — all connected to a Go gRPC microservices backend.
+            <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-300 sm:text-xl">
+              Thoughtfully selected technology and desk essentials, chosen for
+              the way they look, feel, and quietly improve the everyday.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
               <Link
@@ -69,7 +74,7 @@ export function Home() {
                 to="/account"
                 className="inline-flex items-center gap-2 rounded-full border border-white/30 px-6 py-3.5 text-sm font-medium transition hover:bg-white/10"
               >
-                Create Account
+                Join Meridian
               </Link>
             </div>
           </div>
@@ -99,10 +104,10 @@ export function Home() {
         <div className="flex items-end justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wider text-brand-600">
-              Featured
+              The collection
             </p>
             <h2 className="mt-2 font-serif text-3xl tracking-tight sm:text-4xl">
-              Popular picks
+              Essentials worth keeping
             </h2>
           </div>
           <Link
@@ -131,8 +136,8 @@ export function Home() {
         )}
         {!loading && products.length > 0 && (
           <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {products.map((product, index) => (
-              <ProductCard key={product.id} product={product} featured={index === 0} />
+            {products.map((product) => (
+              <ProductCard key={product.id} product={product} />
             ))}
           </div>
         )}
