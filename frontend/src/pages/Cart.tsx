@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
 import { useCart, formatPrice } from "../lib/cart";
 import { EmptyState } from "../components/EmptyState";
-import { productImage } from "../lib/utils";
+import { productPhoto } from "../lib/utils";
 
 export function Cart() {
   const { items, subtotal, updateQuantity, removeItem } = useCart();
@@ -36,12 +36,12 @@ export function Cart() {
               key={product.id}
               className="flex gap-4 rounded-2xl border border-slate-200 bg-white p-4 sm:gap-6 sm:p-5"
             >
-              <div
-                className={`flex h-24 w-24 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${productImage(product.name)}`}
-              >
-                <span className="font-serif text-3xl text-ink/20">
-                  {product.name.charAt(0).toUpperCase()}
-                </span>
+              <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-xl overflow-hidden bg-neutral-50">
+                <img
+                  src={productPhoto(product.name, 240)}
+                  alt={product.name}
+                  className="h-full w-full object-cover"
+                />
               </div>
 
               <div className="flex flex-1 flex-col">

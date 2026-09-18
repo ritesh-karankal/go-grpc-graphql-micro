@@ -15,6 +15,23 @@ export function productImage(name: string) {
   return gradients[hash % gradients.length];
 }
 
+// Return a local curated photo path for a product. Uses a small bundled set of studio images.
+export function productPhoto(name: string, size = 800) {
+  // Local images placed in frontend/public/assets/images/photo-{1..6}.jpg
+  const images = [
+    "/assets/images/photo-1.jpg",
+    "/assets/images/photo-2.jpg",
+    "/assets/images/photo-3.jpg",
+    "/assets/images/photo-4.jpg",
+    "/assets/images/photo-5.jpg",
+    "/assets/images/photo-6.jpg",
+  ];
+
+  // simple stable hash to pick an image per product name
+  const hash = name.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return images[hash % images.length];
+}
+
 export function formatDate(date: string) {
   return new Intl.DateTimeFormat("en-US", {
     dateStyle: "medium",

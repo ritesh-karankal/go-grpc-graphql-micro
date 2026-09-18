@@ -44,33 +44,44 @@ export function Home() {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_50%,rgba(52,211,153,0.15),transparent_50%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_20%,rgba(255,255,255,0.05),transparent_40%)]" />
         <div className="relative mx-auto max-w-7xl px-4 py-20 sm:px-6 sm:py-28 lg:px-8">
-          <div className="max-w-2xl">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-1.5 text-sm backdrop-blur">
-              <Sparkles className="h-4 w-4 text-brand-400" />
-              Powered by GraphQL Microservices
+          <div className="grid grid-cols-1 items-center gap-10 lg:grid-cols-2">
+            <div className="max-w-2xl">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-4 py-1.5 text-sm backdrop-blur">
+                <Sparkles className="h-4 w-4 text-brand-400" />
+                Powered by GraphQL Microservices
+              </div>
+              <h1 className="mt-6 font-serif text-5xl leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
+                Curated goods for{" "}
+                <span className="italic text-brand-400">modern</span> living
+              </h1>
+              <p className="mt-6 text-lg leading-relaxed text-slate-300">
+                Discover thoughtfully selected products with seamless search, cart,
+                and checkout — all connected to a Go gRPC microservices backend.
+              </p>
+              <div className="mt-8 flex flex-wrap gap-4">
+                <Link
+                  to="/shop"
+                  className="inline-flex items-center gap-2 rounded-full bg-brand-400 px-6 py-3.5 text-sm font-semibold text-ink transition hover:bg-brand-300"
+                >
+                  Shop Collection
+                  <ArrowRight className="h-4 w-4" />
+                </Link>
+                <Link
+                  to="/account"
+                  className="inline-flex items-center gap-2 rounded-full border border-white/30 px-6 py-3.5 text-sm font-medium transition hover:bg-white/10"
+                >
+                  Create Account
+                </Link>
+              </div>
             </div>
-            <h1 className="mt-6 font-serif text-5xl leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
-              Curated goods for{" "}
-              <span className="italic text-brand-400">modern</span> living
-            </h1>
-            <p className="mt-6 text-lg leading-relaxed text-slate-300">
-              Discover thoughtfully selected products with seamless search, cart,
-              and checkout — all connected to a Go gRPC microservices backend.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-4">
-              <Link
-                to="/shop"
-                className="inline-flex items-center gap-2 rounded-full bg-brand-400 px-6 py-3.5 text-sm font-semibold text-ink transition hover:bg-brand-300"
-              >
-                Shop Collection
-                <ArrowRight className="h-4 w-4" />
-              </Link>
-              <Link
-                to="/account"
-                className="inline-flex items-center gap-2 rounded-full border border-white/30 px-6 py-3.5 text-sm font-medium transition hover:bg-white/10"
-              >
-                Create Account
-              </Link>
+
+            {/* Clean hero photo on larger screens to evoke studio-style product shots */}
+            <div className="hidden overflow-hidden rounded-3xl shadow-lg lg:block">
+              <img
+                src="https://source.unsplash.com/1200x900/?minimal,product,studio,white-background"
+                alt="Featured product"
+                className="h-96 w-full object-cover"
+              />
             </div>
           </div>
         </div>

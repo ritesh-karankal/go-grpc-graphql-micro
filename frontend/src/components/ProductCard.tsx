@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowUpRight, ShoppingBag } from "lucide-react";
 import type { Product } from "../types";
 import { useCart, formatPrice } from "../lib/cart";
-import { cn, productImage } from "../lib/utils";
+import { cn, productPhoto } from "../lib/utils";
 
 interface ProductCardProps {
   product: Product;
@@ -11,7 +11,7 @@ interface ProductCardProps {
 
 export function ProductCard({ product, featured = false }: ProductCardProps) {
   const { addItem } = useCart();
-  const gradient = productImage(product.name);
+  const photoUrl = productPhoto(product.name, featured ? 1000 : 800);
 
   return (
     <article
@@ -23,15 +23,22 @@ export function ProductCard({ product, featured = false }: ProductCardProps) {
       <Link
         to={`/product/${product.id}`}
         className={cn(
-          "relative flex aspect-[4/5] items-center justify-center overflow-hidden bg-gradient-to-br",
-          gradient,
+          "relative flex aspect-[4/5] items-center justify-center overflow-hidden bg-neutral-50",
           featured && "md:aspect-auto md:w-1/2 md:min-h-[320px]",
         )}
       >
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_50%)]" />
-        <span className="relative font-serif text-5xl text-ink/20 transition group-hover:scale-110">
-          {product.name.charAt(0).toUpperCase()}
-        </span>
+        {/* product photo — using Unsplash source for clean/studio-style shots */}
+        <img
+          src={photoUrl}
+          alt={product.name}
+          className={cn(
+            "absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105",
+          )}
+        />
+
+        {/* subtle highlight overlay to keep contrast for text/icons */}
+        <div className="absolute inset-0 bg-gradient-to-t from-white/40 via-transparent to-transparent" />
+
         <div className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/80 opacity-0 backdrop-blur transition group-hover:opacity-100">
           <ArrowUpRight className="h-4 w-4" />
         </div>

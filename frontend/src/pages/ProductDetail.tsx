@@ -4,7 +4,7 @@ import { ArrowLeft, Minus, Plus, ShoppingBag, Check } from "lucide-react";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { graphqlRequest, queries } from "../lib/graphql";
 import { useCart, formatPrice } from "../lib/cart";
-import { productImage } from "../lib/utils";
+import { productPhoto } from "../lib/utils";
 import type { Product } from "../types";
 
 export function ProductDetail() {
@@ -46,7 +46,7 @@ export function ProductDetail() {
     );
   }
 
-  const gradient = productImage(product.name);
+  const photo = productPhoto(product.name, 1000);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
@@ -59,13 +59,9 @@ export function ProductDetail() {
       </Link>
 
       <div className="mt-8 grid gap-10 lg:grid-cols-2 lg:gap-16">
-        <div
-          className={`relative flex aspect-square items-center justify-center overflow-hidden rounded-3xl bg-gradient-to-br ${gradient}`}
-        >
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.8),transparent_50%)]" />
-          <span className="relative font-serif text-[12rem] leading-none text-ink/15">
-            {product.name.charAt(0).toUpperCase()}
-          </span>
+        <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded-3xl bg-neutral-50">
+          <img src={photo} alt={product.name} className="h-full w-full object-cover" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,0.7),transparent_50%)]" />
         </div>
 
         <div className="flex flex-col justify-center">

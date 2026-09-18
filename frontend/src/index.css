@@ -23,15 +23,40 @@
 
   body {
     @apply bg-surface text-ink antialiased font-sans;
+    /* slightly larger base line-height for airy layout */
+    line-height: 1.6;
   }
 
   ::selection {
     @apply bg-brand-200 text-ink;
+  }
+
+  /* make images feel crisp and card edges soft */
+  img {
+    -webkit-font-smoothing: antialiased;
+    image-rendering: auto;
+  }
+}
+
+@layer components {
+  /* subtle card surface for product listings */
+  .card-surface {
+    @apply rounded-3xl border border-slate-200 bg-white;
+  }
+
+  /* soft shadow used across hero and product images */
+  .soft-shadow {
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
   }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* helper for muted text color to align with design system */
+  .text-muted {
+    color: var(--color-muted);
   }
 }
