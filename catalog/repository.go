@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"time"
 
 	elastic "gopkg.in/olivere/elastic.v5"
 )
@@ -13,8 +14,12 @@ var (
 	ErrNotFound = errors.New("Entity not found")
 )
 
+const catalogIndex = "catalog"
+const productType = "product"
+
 type Repository interface {
 	Close()
+	Setup(ctx context.Context) error
 	PutProduct(ctx context.Context, p Product) error
 	GetProductByID(ctx context.Context, id string) (*Product, error)
 	ListProducts(ctx context.Context, skip uint64, take uint64) ([]Product, error)
@@ -24,6 +29,7 @@ type Repository interface {
 
 type elasticRepository struct {
 	client *elastic.Client
+	url    string
 }
 
 type productDocument struct {
@@ -44,16 +50,52 @@ func NewElasticRepository(url string) (Repository, error) {
 		return nil, err
 	}
 
-	return &elasticRepository{client}, nil
+	return &elasticRepository{client: client, url: url}, nil
 }
 
 func (r *elasticRepository) Close() {
 }
 
+func (r *elasticRepository) Setup(ctx context.Context) error {
+	for {
+		_, _, err := r.client.Ping(r.url).Do(ctx)
+		if err == nil {
+			break
+		}
+		log.Println("Waiting for Elasticsearch:", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	exists, err := r.client.IndexExists(catalogIndex).Do(ctx)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	_, err = r.client.CreateIndex(catalogIndex).BodyJson(map[string]interface{}{
+		"mappings": map[string]interface{}{
+			productType: map[string]interface{}{
+				"properties": map[string]interface{}{
+					"name":        map[string]string{"type": "text"},
+					"description": map[string]string{"type": "text"},
+					"price":       map[string]string{"type": "double"},
+				},
+			},
+		},
+	}).Do(ctx)
+	return err
+}
+
 func (r *elasticRepository) PutProduct(ctx context.Context, p Product) error {
 	_, err := r.client.Index().
-		Index("catalog").
-		Type("product").
+		Index(catalogIndex).
+		Type(productType).
 		Id(p.ID).
 		BodyJson(productDocument{
 			Name:        p.Name,
@@ -66,7 +108,8 @@ func (r *elasticRepository) PutProduct(ctx context.Context, p Product) error {
 
 func (r *elasticRepository) GetProductByID(ctx context.Context, id string) (*Product, error) {
 	res, err := r.client.Get().
-		Index("catalog").
+		Index(catalogIndex).
+		Type(productType).
 		Id(id).
 		Do(ctx)
 
@@ -94,13 +137,16 @@ func (r *elasticRepository) GetProductByID(ctx context.Context, id string) (*Pro
 
 func (r *elasticRepository) ListProducts(ctx context.Context, skip uint64, take uint64) ([]Product, error) {
 	res, err := r.client.Search().
-		Index("catalog").
-		Type("product").
+		Index(catalogIndex).
+		Type(productType).
 		Query(elastic.NewMatchAllQuery()).
 		From(int(skip)).Size(int(take)).
 		Do(ctx)
 
 	if err != nil {
+		if elastic.IsNotFound(err) {
+			return []Product{}, nil
+		}
 		log.Println(err)
 		return nil, err
 	}
@@ -127,7 +173,7 @@ func (r *elasticRepository) ListProductsWithIDs(ctx context.Context, ids []strin
 		items = append(
 			items,
 			elastic.NewMultiGetItem().
-				Index("catalog").Type("product").Id(id),
+				Index(catalogIndex).Type(productType).Id(id),
 		)
 	}
 	res, err := r.client.MultiGet().
@@ -157,13 +203,16 @@ func (r *elasticRepository) ListProductsWithIDs(ctx context.Context, ids []strin
 
 func (r *elasticRepository) SearchProducts(ctx context.Context, query string, skip uint64, take uint64) ([]Product, error) {
 	res, err := r.client.Search().
-		Index("catalog").
-		Type("product").
+		Index(catalogIndex).
+		Type(productType).
 		Query(elastic.NewMultiMatchQuery(query, "name", "description")).
 		From(int(skip)).Size(int(take)).
 		Do(ctx)
 
 	if err != nil {
+		if elastic.IsNotFound(err) {
+			return []Product{}, nil
+		}
 		log.Println(err)
 		return nil, err
 	}

@@ -1,12 +1,12 @@
 package main
 
 import (
-
+	"context"
 	"log"
 	"time"
 
-	"github.com/ritesh-karankal/go-grpc-graphql-micro/catalog"
 	"github.com/kelseyhightower/envconfig"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/catalog"
 	"github.com/tinrab/retry"
 )
 
@@ -32,8 +32,17 @@ func main() {
 
 	defer r.Close()
 
-	log.Println("Listening on port 8080...")
+	ctx := context.Background()
+	if err := r.Setup(ctx); err != nil {
+		log.Fatal(err)
+	}
+
 	s := catalog.NewService(r)
+	if err := catalog.SeedSampleProducts(ctx, s); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Listening on port 8080...")
 	log.Fatal(catalog.ListenGRPC(s, 8080))
 
 }
