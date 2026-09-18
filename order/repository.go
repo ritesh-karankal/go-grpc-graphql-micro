@@ -148,15 +148,14 @@ func (r *postgresRepository) GetOrdersForAccount(ctx context.Context, accountID 
 
 	}
 
-	if lastOrder != nil {
-		newOrder := Order{
+	if lastOrder.ID != "" {
+		orders = append(orders, Order{
 			ID:         lastOrder.ID,
 			AccountID:  lastOrder.AccountID,
 			CreatedAt:  lastOrder.CreatedAt,
 			TotalPrice: lastOrder.TotalPrice,
 			Products:   products,
-		}
-		orders = append(orders, newOrder)
+		})
 	}
 
 	if err = rows.Err(); err != nil {
