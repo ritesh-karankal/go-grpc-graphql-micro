@@ -44,7 +44,7 @@ export function Home() {
         <img
           src="/assets/images/header.jpg"
           alt="A considered workspace with displays, speakers, and desk accessories"
-          className="absolute inset-0 h-full w-full object-cover object-[68%_center] grayscale contrast-110 brightness-75 sm:object-[72%_center]"
+          className="absolute inset-0 h-full w-full object-cover object-[68%_center] saturate-75 contrast-105 brightness-75 sm:object-[72%_center]"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(15,23,42,0.98)_0%,rgba(15,23,42,0.9)_35%,rgba(15,23,42,0.48)_62%,rgba(15,23,42,0.28)_100%)]" />
         <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(15,23,42,0.58),transparent_45%)]" />
@@ -54,9 +54,9 @@ export function Home() {
               <Sparkles className="h-4 w-4 text-brand-400" />
               The Meridian edit / 2026
             </div>
-            <h1 className="mt-6 font-serif text-5xl leading-[1.1] tracking-tight sm:text-6xl lg:text-7xl">
+            <h1 className="mt-6 max-w-2xl text-balance font-serif text-5xl leading-[1.04] tracking-tight sm:text-6xl lg:text-7xl">
               Curated goods for{" "}
-              <span className="italic text-brand-400">modern</span> living
+              <span className="italic text-brand-400">mindful modern</span> living
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-300 sm:text-xl">
               Thoughtfully selected technology and desk essentials, chosen for
