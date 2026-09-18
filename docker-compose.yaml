@@ -16,7 +16,7 @@ services:
       dockerfile: ./catalog/app.dockerfile
     depends_on:
       catalog_db:
-        condition: service_started
+        condition: service_healthy
     environment:
       DATABASE_URL: http://catalog_db:9200
     restart: on-failure
@@ -54,6 +54,16 @@ services:
       ORDER_SERVICE_URL: order:8080
     restart: on-failure
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - graphql
+    restart: on-failure
+
   account_db:
     build:
       context: ./account
@@ -72,8 +82,14 @@ services:
   catalog_db:
     image: docker.elastic.co/elasticsearch/elasticsearch:6.2.4
     environment:
-      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
       discovery.type: single-node
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
     restart: unless-stopped
 
   order_db:
