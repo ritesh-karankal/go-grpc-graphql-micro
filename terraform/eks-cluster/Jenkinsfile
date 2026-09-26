@@ -1,0 +1,58 @@
+properties([
+    parameters([
+        string(
+            defaultValue: 'dev',
+            name: 'Environment'
+        ),
+        choice(
+            choices: ['plan', 'apply', 'destroy'], 
+            name: 'Terraform_Action'
+        )])
+])
+
+pipeline {
+    agent any
+
+    stages {
+        stage('Preparing') {
+            steps {
+                sh 'echo Preparing workspace...'
+                checkout scm
+            }
+        }
+
+        stage('Init') {
+            steps {
+                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
+                    sh 'terraform -chdir=terraform/eks-cluster/ init'
+                }
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
+                    sh 'terraform -chdir=terraform/eks-cluster/ validate'
+                }
+            }
+        }
+
+        stage('Action') {
+            steps {
+                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
+                    script {    
+                        if (params.Terraform_Action == 'plan') {
+                            sh "terraform -chdir=terraform/eks-cluster/ plan"
+                        } else if (params.Terraform_Action == 'apply') {
+                            sh "terraform -chdir=terraform/eks-cluster/ apply -auto-approve"
+                        } else if (params.Terraform_Action == 'destroy') {
+                            sh "terraform -chdir=terraform/eks-cluster/ destroy -auto-approve"
+                        } else {
+                            error "Invalid value for Terraform_Action: ${params.Terraform_Action}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
