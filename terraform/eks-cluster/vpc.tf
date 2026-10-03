@@ -5,8 +5,7 @@ resource "aws_vpc" "eks_vpc" {
   enable_dns_support   = true
 
   tags = {
-    Name                                        = "${var.cluster_name}-vpc"
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+    Name = "${local.cluster_name}-vpc"
   }
 }
 
@@ -15,55 +14,56 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.eks_vpc.id
 
   tags = {
-    Name = "${var.cluster_name}-igw"
+    Name = "${local.cluster_name}-igw"
   }
 }
 
-# Public Subnets
+# Public Subnets (load balancers, NAT Gateways)
 resource "aws_subnet" "public" {
-  count                   = length(var.public_subnet_cidrs)
-  vpc_id                  = aws_vpc.eks_vpc.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name                                        = "${var.cluster_name}-public-${count.index + 1}"
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                    = "1"
-  }
-}
-
-# Private Subnets
-resource "aws_subnet" "private" {
-  count             = length(var.private_subnet_cidrs)
+  count             = var.az_count
   vpc_id            = aws_vpc.eks_vpc.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
-  availability_zone = var.availability_zones[count.index]
+  cidr_block        = local.public_subnet_cidrs[count.index]
+  availability_zone = local.azs[count.index]
 
   tags = {
-    Name                                        = "${var.cluster_name}-private-${count.index + 1}"
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"           = "1"
+    Name                                          = "${local.cluster_name}-public-${local.azs[count.index]}"
+    "kubernetes.io/cluster/${local.cluster_name}" = "shared"
+    "kubernetes.io/role/elb"                      = "1"
   }
 }
 
-# Elastic IP for NAT Gateway
+# Private Subnets (worker nodes and pods)
+resource "aws_subnet" "private" {
+  count             = var.az_count
+  vpc_id            = aws_vpc.eks_vpc.id
+  cidr_block        = local.private_subnet_cidrs[count.index]
+  availability_zone = local.azs[count.index]
+
+  tags = {
+    Name                                          = "${local.cluster_name}-private-${local.azs[count.index]}"
+    "kubernetes.io/cluster/${local.cluster_name}" = "shared"
+    "kubernetes.io/role/internal-elb"             = "1"
+  }
+}
+
+# Elastic IPs for NAT Gateways
 resource "aws_eip" "nat" {
+  count  = local.nat_gateway_count
   domain = "vpc"
 
   tags = {
-    Name = "${var.cluster_name}-nat-eip"
+    Name = "${local.cluster_name}-nat-eip-${count.index + 1}"
   }
 }
 
-# NAT Gateway (gives private subnets outbound internet access)
+# NAT Gateways: one per AZ in prod so losing an AZ doesn't cut egress for the others
 resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+  count         = local.nat_gateway_count
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
 
   tags = {
-    Name = "${var.cluster_name}-nat-gw"
+    Name = "${local.cluster_name}-nat-gw-${count.index + 1}"
   }
 
   depends_on = [aws_internet_gateway.igw]
@@ -79,34 +79,35 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-public-rt"
+    Name = "${local.cluster_name}-public-rt"
   }
 }
 
-# Route Table for Private Subnets
+# Route Tables for Private Subnets (one per AZ, pointing at that AZ's NAT or the single NAT)
 resource "aws_route_table" "private" {
+  count  = var.az_count
   vpc_id = aws_vpc.eks_vpc.id
 
   route {
     cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
+    nat_gateway_id = aws_nat_gateway.nat[var.single_nat_gateway ? 0 : count.index].id
   }
 
   tags = {
-    Name = "${var.cluster_name}-private-rt"
+    Name = "${local.cluster_name}-private-rt-${local.azs[count.index]}"
   }
 }
 
 # Associate Public Subnets with Public Route Table
 resource "aws_route_table_association" "public" {
-  count          = length(var.public_subnet_cidrs)
+  count          = var.az_count
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
-# Associate Private Subnets with Private Route Table
+# Associate Private Subnets with their Private Route Table
 resource "aws_route_table_association" "private" {
-  count          = length(var.private_subnet_cidrs)
+  count          = var.az_count
   subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
+  route_table_id = aws_route_table.private[count.index].id
 }

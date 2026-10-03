@@ -1,6 +1,6 @@
 # IAM Role for EKS Cluster
 resource "aws_iam_role" "eks_cluster_role" {
-  name = "${var.cluster_name}-cluster-role"
+  name = "${local.cluster_name}-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -28,9 +28,31 @@ resource "aws_iam_role_policy_attachment" "eks_vpc_resource_controller" {
   role       = aws_iam_role.eks_cluster_role.name
 }
 
+# KMS Key for envelope encryption of Kubernetes Secrets in etcd
+resource "aws_kms_key" "eks_secrets" {
+  description             = "${local.cluster_name} Kubernetes secrets encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "${local.cluster_name}-secrets"
+  }
+}
+
+resource "aws_kms_alias" "eks_secrets" {
+  name          = "alias/${local.cluster_name}-secrets"
+  target_key_id = aws_kms_key.eks_secrets.key_id
+}
+
+# Control plane log group, created first so Terraform owns its retention
+resource "aws_cloudwatch_log_group" "eks" {
+  name              = "/aws/eks/${local.cluster_name}/cluster"
+  retention_in_days = var.log_retention_days
+}
+
 # EKS Cluster Definition
 resource "aws_eks_cluster" "eks" {
-  name     = var.cluster_name
+  name     = local.cluster_name
   role_arn = aws_iam_role.eks_cluster_role.arn
   version  = var.cluster_version
 
@@ -41,41 +63,47 @@ resource "aws_eks_cluster" "eks" {
     bootstrap_cluster_creator_admin_permissions = false
   }
 
+  # Private API endpoint only: reachable from inside the VPC (nodes, bastion), never the internet
   vpc_config {
     subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
-    endpoint_public_access  = true
+    endpoint_public_access  = false
     endpoint_private_access = true
+  }
+
+  encryption_config {
+    resources = ["secrets"]
+    provider {
+      key_arn = aws_kms_key.eks_secrets.arn
+    }
+  }
+
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
+  # Fail upgrades into paid extended support instead of silently paying for it
+  upgrade_policy {
+    support_type = "STANDARD"
   }
 
   depends_on = [
     aws_iam_role_policy_attachment.eks_cluster_policy,
     aws_iam_role_policy_attachment.eks_vpc_resource_controller,
+    aws_cloudwatch_log_group.eks,
   ]
 
   tags = {
-    Name = var.cluster_name
+    Name = local.cluster_name
   }
 }
 
-# Cluster-admin Access for Jenkins and your IAM user
-# ARNs are built from the current account so no account ID lives in the repo.
-data "aws_caller_identity" "current" {}
-
-locals {
-  cluster_admin_arns = concat(
-    ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${var.jenkins_role_name}"],
-    [for u in var.admin_user_names : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${u}"],
-  )
-}
-
+# Cluster-admin Access for the bastion (and any extra IAM users)
 resource "aws_eks_access_entry" "admins" {
-  for_each      = toset(local.cluster_admin_arns)
+  for_each      = local.cluster_admins
   cluster_name  = aws_eks_cluster.eks.name
   principal_arn = each.value
 }
 
 resource "aws_eks_access_policy_association" "admins" {
-  for_each      = toset(local.cluster_admin_arns)
+  for_each      = local.cluster_admins
   cluster_name  = aws_eks_cluster.eks.name
   principal_arn = each.value
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
