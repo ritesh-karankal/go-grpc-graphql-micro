@@ -21,12 +21,12 @@ resources:
 
 images:
   - name: account
-    newTag: "0"
+    newTag: "3"
   - name: catalog
-    newTag: "0"
+    newTag: "3"
   - name: order
-    newTag: "0"
+    newTag: "3"
   - name: graphql
-    newTag: "0"
+    newTag: "3"
   - name: frontend
     newTag: "0"
