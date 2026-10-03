@@ -405,22 +405,12 @@ kubectl -n kube-system logs deploy/aws-load-balancer-controller --tail=50
 
 ## 📈 Roadmap
 
-- [x] Kubernetes deployment (EKS)
-- [x] Terraform infrastructure (remote state, dev/prod)
-- [x] CI/CD (Jenkins + Argo CD GitOps)
-- [x] Security scanning (SonarQube, OWASP, Trivy) with blocking gates
-- [x] Production secrets management (Secrets Manager + ESO)
-- [x] Prometheus metrics and Grafana dashboards
-- [x] Kubernetes service discovery
-- [ ] HTTPS with ACM (needs a domain)
-- [ ] Argo CD sync waves; manage platform add-ons with Argo CD
-- [ ] Load Balancer Controller IAM in Terraform; least-privilege Jenkins role
-- [ ] Application metrics, centralized logging (Loki), tracing (OpenTelemetry), alert rules
-- [ ] HPA, PodDisruptionBudgets, NetworkPolicies, non-root containers
-- [ ] gRPC health checks
-- [ ] Unit and integration tests with coverage in SonarQube
-- [ ] Elasticsearch 8 / OpenSearch upgrade; RDS for production
-- [ ] Authentication (JWT), rate limiting, retries and circuit breakers, message broker
+- [ ] HTTPS with ACM certificates on the ALB
+- [ ] Argo CD sync waves and app-of-apps for platform add-ons
+- [ ] Autoscaling and resilience: HPA, PodDisruptionBudgets, NetworkPolicies
+- [ ] Centralized logging (Loki) and distributed tracing (OpenTelemetry)
+- [ ] Unit and integration tests with coverage reported to SonarQube
+- [ ] Managed data stores for production (RDS, OpenSearch)
 
 ---
 
