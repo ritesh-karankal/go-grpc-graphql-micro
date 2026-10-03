@@ -46,7 +46,7 @@ resource "aws_iam_role_policy" "bastion_eks" {
   })
 }
 
-# Allow the manual AWS Load Balancer Controller setup from the bastion (tutorial step):
+# Allow the manual AWS Load Balancer Controller setup from the bastion:
 # create the controller's IAM policy and role, and bind the role with Pod Identity.
 # Attach is limited to that one policy, so the bastion can't grant itself or pods more.
 resource "aws_iam_role_policy" "bastion_lb_controller_setup" {

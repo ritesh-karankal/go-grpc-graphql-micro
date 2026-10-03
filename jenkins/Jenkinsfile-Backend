@@ -1,5 +1,5 @@
 // Backend pipeline: the four Go services (account, catalog, order, graphql).
-// Follows a Go monorepo with one image per service.
+// Builds one image per service from the Go monorepo.
 pipeline {
     agent any
 
@@ -91,7 +91,7 @@ pipeline {
             }
         }
 
-        // Scan before pushing (the tutorial scans after) so a vulnerable image never reaches ECR.
+        // Scan before pushing so a vulnerable image never reaches ECR.
         // Fails on CRITICAL vulnerabilities that already have a fix.
         stage('TRIVY Image Scan') {
             steps {

@@ -88,7 +88,7 @@ pipeline {
             }
         }
 
-        // Scan before pushing (the tutorial scans after) so a vulnerable image never reaches ECR.
+        // Scan before pushing so a vulnerable image never reaches ECR.
         // Fails on CRITICAL vulnerabilities that already have a fix.
         stage('TRIVY Image Scan') {
             steps {

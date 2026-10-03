@@ -1,4 +1,4 @@
-# Internet-facing ALB created by the AWS Load Balancer Controller (tutorial: ingress.yaml).
+# Internet-facing ALB created by the AWS Load Balancer Controller.
 # No domain: reach the app on the ALB hostname from `kubectl get ingress`.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
