@@ -46,6 +46,53 @@ resource "aws_iam_role_policy" "bastion_eks" {
   })
 }
 
+# Allow the manual AWS Load Balancer Controller setup from the bastion (tutorial step):
+# create the controller's IAM policy and role, and bind the role with Pod Identity.
+# Attach is limited to that one policy, so the bastion can't grant itself or pods more.
+resource "aws_iam_role_policy" "bastion_lb_controller_setup" {
+  name = "${local.cluster_name}-bastion-lb-controller-setup"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ControllerPolicy"
+        Action   = ["iam:CreatePolicy", "iam:GetPolicy", "iam:GetPolicyVersion"]
+        Effect   = "Allow"
+        Resource = "arn:aws:iam::${local.account_id}:policy/AWSLoadBalancerControllerIAMPolicy"
+      },
+      {
+        Sid      = "ControllerRole"
+        Action   = ["iam:CreateRole", "iam:GetRole", "iam:ListAttachedRolePolicies", "iam:PassRole"]
+        Effect   = "Allow"
+        Resource = "arn:aws:iam::${local.account_id}:role/${local.cluster_name}-lb-controller-role"
+      },
+      {
+        Sid      = "AttachOnlyControllerPolicy"
+        Action   = "iam:AttachRolePolicy"
+        Effect   = "Allow"
+        Resource = "arn:aws:iam::${local.account_id}:role/${local.cluster_name}-lb-controller-role"
+        Condition = {
+          ArnEquals = {
+            "iam:PolicyARN" = "arn:aws:iam::${local.account_id}:policy/AWSLoadBalancerControllerIAMPolicy"
+          }
+        }
+      },
+      {
+        Sid = "PodIdentity"
+        Action = [
+          "eks:CreatePodIdentityAssociation",
+          "eks:ListPodIdentityAssociations",
+          "eks:DescribePodIdentityAssociation",
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # Instance Profile
 resource "aws_iam_instance_profile" "bastion" {
   name = "${local.cluster_name}-bastion-profile"
