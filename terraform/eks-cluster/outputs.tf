@@ -47,3 +47,8 @@ output "bastion_ssm_session" {
   description = "Command to open a shell on the bastion (kubectl is preconfigured there)"
   value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.bastion.id}"
 }
+
+output "db_secret_names" {
+  description = "Secrets Manager secrets holding the database credentials"
+  value       = { for k, s in aws_secretsmanager_secret.db : k => s.name }
+}

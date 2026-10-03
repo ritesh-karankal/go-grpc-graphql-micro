@@ -69,6 +69,12 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "secret_recovery_window_days" {
+  description = "Days a deleted Secrets Manager secret can be restored (0 = delete immediately, lets dev be recreated under the same name)"
+  type        = number
+  default     = 7
+}
+
 # --------------------------------------------
 # Nodes
 # --------------------------------------------
