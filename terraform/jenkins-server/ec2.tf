@@ -38,7 +38,9 @@ resource "aws_instance" "jenkins" {
   }
 
   lifecycle {
-    ignore_changes = [ami] # don't replace the server when a newer AMI is published
+    # Don't replace or reboot the server when a newer AMI is published or setup.sh changes;
+    # setup.sh only runs on first boot anyway
+    ignore_changes = [ami, user_data]
   }
 }
 

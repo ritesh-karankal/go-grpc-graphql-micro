@@ -115,6 +115,10 @@ usermod -aG docker ubuntu
 
 systemctl restart docker
 
+# Jenkins was started before it joined the docker group; restart it so the
+# running process picks up the new group (otherwise: docker.sock permission denied)
+systemctl restart jenkins
+
 docker --version
 docker compose version
 
