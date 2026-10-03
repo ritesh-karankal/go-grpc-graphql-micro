@@ -126,6 +126,13 @@ echo "========================================"
 echo "[5/10] Installing SonarQube..."
 echo "========================================"
 
+# SonarQube's embedded Elasticsearch requires these kernel limits
+cat > /etc/sysctl.d/99-sonarqube.conf <<EOF
+vm.max_map_count=524288
+fs.file-max=131072
+EOF
+sysctl --system
+
 # Remove old container if it exists
 docker rm -f sonar 2>/dev/null || true
 

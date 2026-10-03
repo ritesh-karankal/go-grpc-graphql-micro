@@ -1,0 +1,2 @@
+# Copy to backend.hcl (git-ignored) and replace <ACCOUNT_ID>
+bucket = "go-grpc-micro-tfstate-<ACCOUNT_ID>"
