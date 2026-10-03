@@ -1,0 +1,144 @@
+// Frontend pipeline: React/Vite app served by nginx.
+pipeline {
+    agent any
+
+    tools {
+        nodejs 'nodejs'
+    }
+
+    environment {
+        SCANNER_HOME      = tool 'sonar-scanner'
+        AWS_ACCOUNT_ID    = credentials('AWS_ACCOUNT_ID')
+        AWS_REGION        = 'eu-north-1'
+        REPOSITORY_URI    = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        AWS_ECR_REPO_NAME = 'frontend'
+        IMAGE_TAG         = "${BUILD_NUMBER}"
+        GIT_BRANCH        = 'main'
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Cleaning Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout from Git') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Sonarqube Analysis') {
+            steps {
+                dir('frontend') {
+                    withSonarQubeEnv('sonar-server') {
+                        sh '''
+                            $SCANNER_HOME/bin/sonar-scanner \
+                              -Dsonar.projectName=go-grpc-graphql-micro-frontend \
+                              -Dsonar.projectKey=go-grpc-graphql-micro-frontend \
+                              -Dsonar.sources=src \
+                              -Dsonar.exclusions=**/node_modules/**,dist/**
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Quality Check') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('OWASP Dependency-Check Scan') {
+            steps {
+                dir('frontend') {
+                    withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+                        dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey ${NVD_API_KEY}", odcInstallation: 'DP-Check'
+                    }
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
+            }
+        }
+
+        stage('Trivy File Scan') {
+            steps {
+                dir('frontend') {
+                    sh 'trivy fs --severity HIGH,CRITICAL . > trivyfs.txt'
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                dir('frontend') {
+                    sh '''
+                        docker container prune -f
+                        docker build -t ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${IMAGE_TAG} .
+                    '''
+                }
+            }
+        }
+
+        // Scan before pushing (the tutorial scans after) so a vulnerable image never reaches ECR.
+        // Fails on CRITICAL vulnerabilities that already have a fix.
+        stage('TRIVY Image Scan') {
+            steps {
+                sh '''
+                    trivy image --severity HIGH,CRITICAL ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${IMAGE_TAG} > trivyimage.txt
+                    trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 --quiet ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('ECR Image Pushing') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}
+                    docker push ${REPOSITORY_URI}/${AWS_ECR_REPO_NAME}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('Update Deployment file') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GIT_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        git config user.name  "Ritesh Karankal"
+                        git config user.email "ritesh.karankal200@gmail.com"
+
+                        # checkout scm leaves a detached HEAD; work on the latest main instead
+                        git fetch origin ${GIT_BRANCH}
+                        git checkout -B ${GIT_BRANCH} origin/${GIT_BRANCH}
+
+                        # Bump the frontend newTag in the kustomization (line after "- name: frontend")
+                        sed -i -E "/^  - name: ${AWS_ECR_REPO_NAME}$/{n;s/newTag: .*/newTag: \\"${IMAGE_TAG}\\"/}" k8s/base/kustomization.yaml
+
+                        git add k8s/base/kustomization.yaml
+                        git diff --cached --stat
+                        git commit -m "chore(deploy): update frontend image to ${IMAGE_TAG}"
+
+                        # The backend pipeline may have pushed meanwhile
+                        git pull --rebase origin ${GIT_BRANCH}
+                        git push https://${GIT_USER}:${GITHUB_TOKEN}@github.com/ritesh-karankal/go-grpc-graphql-micro.git HEAD:${GIT_BRANCH}
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'frontend/trivyfs.txt,trivyimage.txt', allowEmptyArchive: true
+            sh 'docker image prune -af --filter "until=24h" || true'
+        }
+    }
+}

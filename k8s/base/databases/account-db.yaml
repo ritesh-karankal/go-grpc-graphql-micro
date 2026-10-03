@@ -1,0 +1,108 @@
+# Schema, same as account/up.sql. Postgres runs it only when the data volume is empty.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: account-db-init
+data:
+  1.sql: |
+    CREATE TABLE IF NOT EXISTS accounts (
+      id CHAR(27) PRIMARY KEY,
+      name VARCHAR(24) NOT NULL
+    );
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: account-db-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: account-db
+  labels:
+    app: account-db
+spec:
+  serviceName: account-db-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-db
+  template:
+    metadata:
+      labels:
+        app: account-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: account-db-secret
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: account-db-storage
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - account_db
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+                - -d
+                - account_db
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: account-db-storage
+          persistentVolumeClaim:
+            claimName: account-db-pvc
+        - name: init-sql
+          configMap:
+            name: account-db-init
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-db-service
+spec:
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  selector:
+    app: account-db
+  type: ClusterIP

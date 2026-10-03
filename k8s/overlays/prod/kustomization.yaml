@@ -1,0 +1,10 @@
+# prod environment. Argo CD points here and adds the ECR registry for each image
+# (spec.source.kustomize.images), keeping the tags from ../../base.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: go-micro-shop
+
+resources:
+  - ../../base
+  - external-secrets.yaml

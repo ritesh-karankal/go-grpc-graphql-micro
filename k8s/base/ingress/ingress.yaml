@@ -1,0 +1,36 @@
+# Internet-facing ALB created by the AWS Load Balancer Controller (tutorial: ingress.yaml).
+# No domain: reach the app on the ALB hostname from `kubectl get ingress`.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: go-micro-shop
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /graphql
+            pathType: Prefix
+            backend:
+              service:
+                name: graphql
+                port:
+                  number: 8080
+          - path: /playground
+            pathType: Prefix
+            backend:
+              service:
+                name: graphql
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
