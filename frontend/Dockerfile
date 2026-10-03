@@ -10,7 +10,10 @@ COPY . .
 
 RUN npm run build
 
-FROM nginx:1.27-alpine
+# nginx stable branch; apk upgrade pulls in security fixes released after the base image was built
+FROM nginx:1.30-alpine
+
+RUN apk upgrade --no-cache
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
