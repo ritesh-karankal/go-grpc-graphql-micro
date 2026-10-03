@@ -1,11 +1,7 @@
 properties([
     parameters([
-        string(
-            defaultValue: 'dev',
-            name: 'Environment'
-        ),
         choice(
-            choices: ['plan', 'apply', 'destroy'], 
+            choices: ['plan', 'apply', 'destroy'],
             name: 'Terraform_Action'
         )])
 ])
@@ -13,45 +9,74 @@ properties([
 pipeline {
     agent any
 
+    // AWS access comes from the Jenkins EC2 instance role; no stored keys needed.
+    environment {
+        AWS_REGION = 'eu-north-1'
+        TF_DIR     = 'terraform/eks-cluster'
+        TF_IN_AUTOMATION = 'true'
+        AWS_ACCOUNT_ID   = credentials('AWS_ACCOUNT_ID')
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
     stages {
         stage('Preparing') {
             steps {
-                sh 'echo Preparing workspace...'
                 checkout scm
             }
         }
 
         stage('Init') {
             steps {
-                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
-                    sh 'terraform -chdir=terraform/eks-cluster/ init'
-                }
+                sh 'terraform -chdir=${TF_DIR} init -input=false -backend-config="bucket=go-grpc-micro-tfstate-${AWS_ACCOUNT_ID}"'
             }
         }
 
         stage('Validate') {
             steps {
-                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
-                    sh 'terraform -chdir=terraform/eks-cluster/ validate'
+                sh 'terraform -chdir=${TF_DIR} validate'
+            }
+        }
+
+        stage('Plan') {
+            steps {
+                script {
+                    def destroyFlag = (params.Terraform_Action == 'destroy') ? '-destroy' : ''
+                    sh "terraform -chdir=${TF_DIR} plan -input=false ${destroyFlag} -out=tfplan"
                 }
             }
         }
 
-        stage('Action') {
+        stage('Approve') {
+            when {
+                expression { params.Terraform_Action != 'plan' }
+            }
             steps {
-                withAWS(credentials: 'aws-creds', region: 'eu-north-1') {
-                    script {    
-                        if (params.Terraform_Action == 'plan') {
-                            sh "terraform -chdir=terraform/eks-cluster/ plan"
-                        } else if (params.Terraform_Action == 'apply') {
-                            sh "terraform -chdir=terraform/eks-cluster/ apply -auto-approve"
-                        } else if (params.Terraform_Action == 'destroy') {
-                            sh "terraform -chdir=terraform/eks-cluster/ destroy -auto-approve"
-                        } else {
-                            error "Invalid value for Terraform_Action: ${params.Terraform_Action}"
-                        }
-                    }
-                }
+                input message: "Run terraform ${params.Terraform_Action} on the EKS cluster?", ok: 'Proceed'
+            }
+        }
+
+        stage('Apply') {
+            when {
+                expression { params.Terraform_Action != 'plan' }
+            }
+            steps {
+                sh 'terraform -chdir=${TF_DIR} apply -input=false tfplan'
+            }
+        }
+
+        stage('Configure kubectl') {
+            when {
+                expression { params.Terraform_Action == 'apply' }
+            }
+            steps {
+                sh '''
+                    $(terraform -chdir=${TF_DIR} output -raw configure_kubectl)
+                    kubectl get nodes -o wide
+                '''
             }
         }
     }
