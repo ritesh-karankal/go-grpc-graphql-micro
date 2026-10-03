@@ -63,7 +63,7 @@ A **microservices e-commerce platform** written in **Go** (three gRPC services p
 
 ![Architecture: Go gRPC GraphQL microservices on AWS EKS with Jenkins DevSecOps CI and Argo CD GitOps](docs/architecture.png)
 
-<sub>Editable source: [`docs/architecture.drawio`](docs/architecture.drawio) (open in [draw.io](https://app.diagrams.net)). Numbers follow the delivery flow: 1 push → 2 checkout → 3 scan → 4 push image → 5 commit tag → 6 Argo CD pulls → 7 sync → 8 pull images.</sub>
+<sub>✏️ [Open the editable diagram in draw.io](https://app.diagrams.net/#Uhttps%3A%2F%2Fraw.githubusercontent.com%2Fritesh-karankal%2Fgo-grpc-graphql-micro%2Fmain%2Fdocs%2Farchitecture.drawio) (source: [`docs/architecture.drawio`](docs/architecture.drawio)). Numbers follow the delivery flow: 1 push → 2 checkout → 3 scan → 4 push image → 5 commit tag → 6 Argo CD pulls → 7 sync → 8 pull images.</sub>
 
 ### Platform
 
