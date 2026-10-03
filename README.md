@@ -30,21 +30,33 @@ A **microservices e-commerce platform** written in **Go** (three gRPC services p
 
 ## 📸 Screenshots
 
-| Storefront | GraphQL Playground |
+| Storefront – home | Cart |
 |---|---|
-| ![Storefront](docs/screenshots/app-home.png) | ![GraphQL Playground](docs/screenshots/graphql-playground.png) |
+| ![Storefront home](docs/screenshots/app-home.jpg) | ![Cart](docs/screenshots/app-cart.png) |
 
-| Jenkins pipeline (backend) | SonarQube quality gate |
+| Order history (order → account + catalog over gRPC) | Account |
 |---|---|
-| ![Jenkins backend pipeline](docs/screenshots/jenkins-backend-pipeline.png) | ![SonarQube](docs/screenshots/sonarqube-dashboard.png) |
+| ![Order history](docs/screenshots/app-orders.png) | ![Account](docs/screenshots/app-account.png) |
 
-| Trivy gate blocking a vulnerable image | Argo CD application |
+| SonarQube – backend (Go services) | SonarQube – frontend (React) |
 |---|---|
-| ![Trivy gate](docs/screenshots/trivy-gate-blocked.png) | ![Argo CD](docs/screenshots/argocd-app-tree.png) |
+| ![SonarQube backend: quality gate passed](docs/screenshots/sonarqube-backend.png) | ![SonarQube frontend: quality gate passed](docs/screenshots/sonarqube-frontend.png) |
 
-| Grafana | Amazon ECR (immutable tags, scan on push) |
+| Jenkins – backend pipeline (4 Go images) | Jenkins – frontend: build #2 **blocked by the Trivy gate**, #3 green after the fix |
 |---|---|
-| ![Grafana](docs/screenshots/grafana-dashboard.png) | ![ECR](docs/screenshots/ecr-repositories.png) |
+| ![Jenkins backend pipeline](docs/screenshots/jenkins-backend-pipeline.png) | ![Jenkins frontend pipeline with Trivy gate failure](docs/screenshots/jenkins-frontend-pipeline.png) |
+
+| Grafana – node CPU/memory, pods running | Grafana – memory per container |
+|---|---|
+| ![Grafana cluster overview](docs/screenshots/grafana-dashboard.png) | ![Grafana memory per container](docs/screenshots/grafana-containers.png) |
+
+| Argo CD – Synced/Healthy; last sync is the pipeline's `chore(deploy)` tag bump; "5 parameter overrides" = ECR registry injected at deploy time | Amazon ECR (immutable tags, scan on push) |
+|---|---|
+| ![Argo CD](docs/screenshots/argocd-app-tree.png) | ![ECR](docs/screenshots/ecr-repositories.png) |
+
+| Jenkins – EKS Terraform pipeline (plan → approve → apply) | GraphQL Playground – one query served by catalog, account and order services |
+|---|---|
+| ![Jenkins eks-cluster pipeline](docs/screenshots/jenkins-eks-cluster-pipeline.png) | ![GraphQL Playground: one query across catalog, account and order services](docs/screenshots/graphql-playground.png) |
 
 ---
 
@@ -136,7 +148,7 @@ Rollback = git revert of the tag commit.
 | **Secrets** | Terraform `ephemeral` passwords + **write-only** Secrets Manager values → External Secrets Operator → Kubernetes Secrets |
 | **Observability** | Prometheus (node-exporter, kube-state-metrics, Alertmanager) + Grafana dashboards |
 
-> A real example of the gate working: the frontend image (`nginx:1.27-alpine`, OpenSSL 3.3.3) was **blocked by Trivy** for a critical CVE. The fix was moving to the supported `nginx:1.30-alpine` branch plus `apk upgrade`. See [problems and fixes](docs/PROCESS.md#21-problems-encountered-and-fixes).
+> A real example of the gate working (see the frontend pipeline screenshot above): the frontend image (`nginx:1.27-alpine`, OpenSSL 3.3.3) was **blocked by Trivy** for a critical CVE. The fix was moving to the supported `nginx:1.30-alpine` branch plus `apk upgrade`. See [problems and fixes](docs/PROCESS.md#21-problems-encountered-and-fixes).
 
 ---
 
