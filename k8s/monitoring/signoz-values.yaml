@@ -1,0 +1,58 @@
+# SigNoz (traces, metrics, logs) for the go-micro-shop services.
+# Runs next to Prometheus + Grafana, which stay as they are.
+#
+#   helm repo add signoz https://charts.signoz.io && helm repo update
+#   helm upgrade --install signoz signoz/signoz -n signoz --create-namespace \
+#     --version 0.145.0 -f k8s/monitoring/signoz-values.yaml
+#
+# The services send OTLP/gRPC to signoz-otel-collector.signoz.svc.cluster.local:4317
+# (otel-config ConfigMap in k8s/base/kustomization.yaml). The release must be called
+# "signoz" in namespace "signoz" for that name to resolve.
+#
+# Sized for the t3.large node groups in terraform/eks-cluster/envs/*.tfvars.
+# Retention is set in the UI: Settings -> General.
+
+global:
+  # PVCs use the cluster default StorageClass (encrypted gp3, from the EBS CSI add-on)
+  storageClass: null
+  clusterName: go-micro-shop
+
+clickhouse:
+  persistence:
+    size: 20Gi
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  zookeeper:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+
+signoz:
+  # Stays ClusterIP: switching it to LoadBalancer would also publish the internal
+  # gRPC (8085) and OpAMP (4320) ports. signoz-ui-service.yaml exposes only the UI.
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+otelCollector:
+  # In-cluster only; nothing outside the VPC needs to send telemetry
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

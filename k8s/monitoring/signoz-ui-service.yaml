@@ -1,0 +1,22 @@
+# Public entry for the SigNoz UI only, restricted to one IP like the Prometheus and
+# Grafana load balancers. Your IP is not kept in git; fill it in when applying:
+#
+#   MY_IP=$(curl -s https://checkip.amazonaws.com)
+#   sed "s|<YOUR_IP>|${MY_IP}|" k8s/monitoring/signoz-ui-service.yaml | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: signoz-ui
+  namespace: signoz
+spec:
+  type: LoadBalancer
+  loadBalancerSourceRanges:
+    - <YOUR_IP>/32
+  selector:
+    app.kubernetes.io/name: signoz
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: signoz
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
