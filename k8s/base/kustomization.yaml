@@ -38,4 +38,4 @@ images:
   - name: graphql
     newTag: "3"
   - name: frontend
-    newTag: "3"
+    newTag: "2"
