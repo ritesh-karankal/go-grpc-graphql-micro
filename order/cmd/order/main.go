@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/order"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/tinrab/retry"
 )
@@ -21,6 +23,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	shutdown, err := telemetry.Init(context.Background(), "order-service")
+	if err != nil {
+		log.Fatal(err)
+	}
+	telemetry.ShutdownOnSignal(shutdown)
 
 	var r order.Repository
 

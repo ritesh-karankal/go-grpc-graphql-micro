@@ -10,6 +10,7 @@ COPY go.mod go.sum ./
 COPY account ./account
 COPY catalog ./catalog
 COPY order ./order
+COPY telemetry ./telemetry
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app/app \

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 type queryResolver struct {
@@ -16,7 +16,7 @@ func (r *queryResolver) Accounts(ctx context.Context, pagination *PaginationInpu
 	if id != nil {
 		r, err := r.server.accountClient.GetAccount(ctx, *id)
 		if err != nil {
-			log.Println(err)
+			slog.ErrorContext(ctx, "Failed to get account", "err", err)
 			return nil, err
 		}
 
@@ -34,7 +34,7 @@ func (r *queryResolver) Accounts(ctx context.Context, pagination *PaginationInpu
 
 	accountList, err := r.server.accountClient.GetAccounts(ctx, skip, take)
 	if err != nil {
-		log.Println(err)
+		slog.ErrorContext(ctx, "Failed to list accounts", "err", err)
 		return nil, err
 	}
 
@@ -58,7 +58,7 @@ func (r *queryResolver) Products(ctx context.Context, pagination *PaginationInpu
 	if id != nil {
 		r, err := r.server.catalogClient.GetProduct(ctx, *id)
 		if err != nil {
-			log.Println(err)
+			slog.ErrorContext(ctx, "Failed to get product", "err", err)
 			return nil, err
 		}
 
@@ -82,7 +82,7 @@ func (r *queryResolver) Products(ctx context.Context, pagination *PaginationInpu
 
 	productList, err := r.server.catalogClient.GetProducts(ctx, skip, take, nil, q)
 	if err != nil {
-		log.Println(err)
+		slog.ErrorContext(ctx, "Failed to list products", "err", err)
 		return nil, err
 	}
 

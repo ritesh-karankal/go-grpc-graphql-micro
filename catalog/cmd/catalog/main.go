@@ -7,6 +7,7 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/catalog"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"github.com/tinrab/retry"
 )
 
@@ -20,6 +21,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	shutdown, err := telemetry.Init(context.Background(), "catalog-service")
+	if err != nil {
+		log.Fatal(err)
+	}
+	telemetry.ShutdownOnSignal(shutdown)
 
 	var r catalog.Repository
 	retry.ForeverSleep(2*time.Second, func(_ int) (err error) {

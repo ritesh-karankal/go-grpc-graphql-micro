@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/XSAM/otelsql"
 	_ "github.com/lib/pq"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 )
 
 type Repository interface {
@@ -19,8 +21,20 @@ type postgresRepository struct {
 }
 
 func NewPostgresRepository(url string) (Repository, error) {
-	db, err := sql.Open("postgres", url)
+	db, err := otelsql.Open("postgres", url,
+		otelsql.WithAttributes(semconv.DBSystemNamePostgreSQL),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{
+			OmitConnResetSession: true,
+			OmitConnPrepare:      true,
+			OmitRows:             true,
+		}),
+	)
 	if err != nil {
+		return nil, err
+	}
+
+	if _, err := otelsql.RegisterDBStatsMetrics(db, otelsql.WithAttributes(semconv.DBSystemNamePostgreSQL)); err != nil {
+		db.Close()
 		return nil, err
 	}
 

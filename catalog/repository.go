@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
+	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	elastic "gopkg.in/olivere/elastic.v5"
 )
 
@@ -44,6 +47,8 @@ func NewElasticRepository(url string) (Repository, error) {
 		elastic.SetURL(url),
 		elastic.SetSniff(false),
 		elastic.SetHealthcheck(false),
+		// elastic.v5 has no OTel plugin; tracing its HTTP calls gives one span per ES request
+		elastic.SetHttpClient(&http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}),
 	)
 
 	if err != nil {
@@ -147,7 +152,7 @@ func (r *elasticRepository) ListProducts(ctx context.Context, skip uint64, take 
 		if elastic.IsNotFound(err) {
 			return []Product{}, nil
 		}
-		log.Println(err)
+		slog.ErrorContext(ctx, "Failed to list products", "err", err)
 		return nil, err
 	}
 
@@ -181,7 +186,7 @@ func (r *elasticRepository) ListProductsWithIDs(ctx context.Context, ids []strin
 		Do(ctx)
 
 	if err != nil {
-		log.Println(err)
+		slog.ErrorContext(ctx, "Failed to get products by IDs", "err", err)
 		return nil, err
 	}
 
@@ -213,7 +218,7 @@ func (r *elasticRepository) SearchProducts(ctx context.Context, query string, sk
 		if elastic.IsNotFound(err) {
 			return []Product{}, nil
 		}
-		log.Println(err)
+		slog.ErrorContext(ctx, "Failed to search products", "err", err)
 		return nil, err
 	}
 

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/account"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/tinrab/retry"
 )
@@ -19,6 +21,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	shutdown, err := telemetry.Init(context.Background(), "account-service")
+	if err != nil {
+		log.Fatal(err)
+	}
+	telemetry.ShutdownOnSignal(shutdown)
 
 	var r account.Repository
 	retry.ForeverSleep(2*time.Second, func(_ int) (err error) {

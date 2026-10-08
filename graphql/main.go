@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
+	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/kelseyhightower/envconfig"
+	"github.com/ravilushqa/otelgqlgen"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type AppConfig struct {
@@ -23,6 +28,12 @@ func main() {
 		log.Fatal(err)
 	}
 
+	shutdown, err := telemetry.Init(context.Background(), "graphql-gateway")
+	if err != nil {
+		log.Fatal(err)
+	}
+	telemetry.ShutdownOnSignal(shutdown)
+
 	s, err := NewGraphQLServer(cfg.AccountURL, cfg.CatalogURL, cfg.OrderURL)
 	if err != nil {
 		log.Fatal(err)
@@ -34,7 +45,16 @@ func main() {
 	graphqlServer.AddTransport(transport.GET{})
 	graphqlServer.AddTransport(transport.POST{})
 
-	http.Handle("/graphql", corsMiddleware(graphqlServer))
+	// One span per GraphQL operation and per resolver call. Variables are left out
+	// so user input (names etc.) doesn't end up in the traces.
+	graphqlServer.Use(otelgqlgen.Middleware(
+		otelgqlgen.WithoutVariables(),
+		otelgqlgen.WithCreateSpanFromFields(func(fc *graphql.FieldContext) bool {
+			return fc.IsResolver
+		}),
+	))
+
+	http.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(graphqlServer), "graphql"))
 	http.Handle("/playground", corsMiddleware(playground.Handler("ritesh", "/graphql")))
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

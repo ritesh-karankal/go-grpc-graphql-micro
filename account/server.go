@@ -3,9 +3,11 @@ package account
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/account/pb"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -22,7 +24,7 @@ func ListenGRPC(s Service, port int) error {
 		return err
 	}
 
-	serv := grpc.NewServer()
+	serv := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	pb.RegisterAccountServiceServer(serv, &grpcServer{service: s})
 	reflection.Register(serv)
 	return  serv.Serve(lis)
@@ -31,6 +33,7 @@ func ListenGRPC(s Service, port int) error {
 func (s *grpcServer) PostAccount(ctx context.Context, r *pb.PostAccountRequest) (*pb.PostAccountResponse, error) {
 	a, err := s.service.PostAccount(ctx, r.Name)
 	if err != nil {
+		slog.ErrorContext(ctx, "Failed to post account", "err", err)
 		return nil, err
 	}
 	return &pb.PostAccountResponse{Account: &pb.Account{
@@ -42,6 +45,7 @@ func (s *grpcServer) PostAccount(ctx context.Context, r *pb.PostAccountRequest) 
 func (s *grpcServer) GetAccount(ctx context.Context, r *pb.GetAccountRequest) (*pb.GetAccountResponse, error) {
 	a, err := s.service.GetAccount(ctx, r.Id)
 	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get account", "err", err)
 		return nil, err
 	}
 
@@ -56,6 +60,7 @@ func (s *grpcServer) GetAccount(ctx context.Context, r *pb.GetAccountRequest) (*
 func (s *grpcServer) GetAccounts(ctx context.Context, r *pb.GetAccountsRequest) (*pb.GetAccountsResponse, error) {
 	res, err := s.service.GetAccounts(ctx, r.Skip, r.Take)
 	if err != nil {
+		slog.ErrorContext(ctx, "Failed to get accounts", "err", err)
 		return nil, err
 	}
 	accounts := []*pb.Account{}
