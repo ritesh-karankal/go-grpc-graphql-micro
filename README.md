@@ -259,13 +259,26 @@ docker compose down                    # stop
 docker compose down -v                 # stop and delete data
 ```
 
-**Traces, metrics and logs locally (optional).** Run SigNoz with its own Compose file, then point the services at its collector:
+**Traces, metrics and logs locally (optional).** Run SigNoz with its installer, [Foundry](https://signoz.io/docs/install/docker/) (Docker needs ~4 GB RAM), then point the services at its collector:
 ```bash
-git clone --depth 1 https://github.com/SigNoz/signoz.git ../signoz
-(cd ../signoz/deploy/docker && docker compose up -d)          # UI on http://localhost:8080
+curl -fsSL https://signoz.io/foundry.sh | bash                 # installs foundryctl
+mkdir -p ../signoz-local && cd ../signoz-local
+cat > casting.yaml <<'YAML'
+apiVersion: v1alpha1
+kind: Installation
+metadata:
+  name: signoz
+spec:
+  deployment:
+    flavor: compose
+    mode: docker
+YAML
+foundryctl cast -f casting.yaml                                # UI on http://localhost:8080, OTLP on 4317/4318
+cd -
 
-OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317 docker compose up -d
+OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4317 docker compose up -d --build
 ```
+Stop SigNoz with `docker compose down` inside `../signoz-local/pours/deployment`.
 Without `OTEL_EXPORTER_OTLP_ENDPOINT` the services only log to stdout. Each service also serves Prometheus metrics on port `9464` inside its container.
 
 ## ☁️ Deploy to AWS
