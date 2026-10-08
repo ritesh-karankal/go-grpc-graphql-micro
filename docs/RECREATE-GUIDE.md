@@ -2,9 +2,9 @@
 
 **For:** a junior DevOps engineer who wants to rebuild this whole platform in their own AWS account and understand every command along the way.
 
-**You will build:** Jenkins + SonarQube on EC2 → a private EKS cluster with a bastion → the AWS Load Balancer Controller → Argo CD → CI pipelines with security gates → GitOps deployment → secrets from AWS Secrets Manager → Prometheus and Grafana.
+**You will build:** Jenkins + SonarQube on EC2 → a private EKS cluster with a bastion → the AWS Load Balancer Controller → Argo CD → CI pipelines with security gates → GitOps deployment → secrets from AWS Secrets Manager → Prometheus and Grafana → OpenTelemetry tracing, metrics and logs in SigNoz.
 
-**Time:** one long day, or two relaxed ones. **Cost:** roughly $10–12 per day while everything runs, so read [Step 17 – Teardown](#step-17--teardown) before you start.
+**Time:** one long day, or two relaxed ones. **Cost:** roughly $10–12 per day while everything runs, so read [Step 18 – Teardown](#step-18--teardown) before you start.
 
 > **How to read this guide.** Every step has: **Goal** (what you're doing), **Why** (the reason), **Do** (commands to run), **Check** (how to know it worked) and **If it fails** (the errors we actually hit). Placeholders look like `<THIS>`. Replace them with your own values.
 
@@ -28,8 +28,9 @@
 - [Step 13 – Run the CI pipelines](#step-13--run-the-ci-pipelines)
 - [Step 14 – Deploy with Argo CD](#step-14--deploy-with-argo-cd)
 - [Step 15 – Prometheus and Grafana](#step-15--prometheus-and-grafana)
-- [Step 16 – Prove GitOps works](#step-16--prove-gitops-works)
-- [Step 17 – Teardown](#step-17--teardown)
+- [Step 16 – SigNoz and OpenTelemetry](#step-16--signoz-and-opentelemetry)
+- [Step 17 – Prove GitOps works](#step-17--prove-gitops-works)
+- [Step 18 – Teardown](#step-18--teardown)
 - [Appendix A – Glossary](#appendix-a--glossary)
 - [Appendix B – Command cheat sheet](#appendix-b--command-cheat-sheet)
 - [Appendix C – Troubleshooting index](#appendix-c--troubleshooting-index)
@@ -638,12 +639,56 @@ Use the `grafana-community` chart; the old `grafana/grafana` chart is deprecated
 - Grafana: `http://<grafana-host>/`, logging in as `admin` with the password above.
   1. **Connections → Data sources → Add → Prometheus**, URL `http://prometheus-server.monitoring.svc.cluster.local` → **Save & test**.
   2. **Dashboards → New → Import** → `6417` → Load → select Prometheus → Import. Repeat with `17375`.
+  3. **Dashboards → New → Import** → upload `k8s/monitoring/grafana-dashboard.json` → Import. This is the app's own dashboard: requests, errors and latency per service, Postgres/Elasticsearch timings and Go runtime, read from each pod's `:9464/metrics` (pods carry `prometheus.io/scrape` annotations, so the chart's `kubernetes-pods` job finds them without extra config).
 
 **If Grafana won't load in the browser but `curl` works:** you typed it without `http://` and the browser tried HTTPS, or the DNS lookup is cached. Also check that `https://checkip.amazonaws.com` in the **browser** shows `<YOUR_IP>` (a VPN changes it).
 
 ---
 
-## Step 16 – Prove GitOps works
+## Step 16 – SigNoz and OpenTelemetry
+
+**Goal:** follow one request from the GraphQL gateway through the gRPC services down to the SQL query, and see the logs that request wrote.
+
+- Every Go service uses the **OpenTelemetry SDK** (`telemetry/telemetry.go`): spans for GraphQL operations and resolvers, gRPC calls, Postgres queries and Elasticsearch requests; metrics; and `slog` logs carrying the trace ID.
+- They send all three over **OTLP/gRPC** to the **SigNoz OTel Collector**, which stores them in ClickHouse. The address comes from the `otel-config` ConfigMap in `k8s/base/kustomization.yaml`.
+- **Prometheus + Grafana stay.** The same metrics are also served on `:9464/metrics` and scraped by Prometheus (Step 15). SigNoz is for traces, logs and per-request debugging; Grafana keeps the cluster dashboards.
+- If SigNoz is not installed, the services still run: OTLP exports just fail in the background.
+
+**Do (bastion, from the repo root):**
+```bash
+helm repo add signoz https://charts.signoz.io && helm repo update
+helm upgrade --install signoz signoz/signoz -n signoz --create-namespace \
+  --version 0.145.0 -f k8s/monitoring/signoz-values.yaml
+
+kubectl -n signoz get pods -w        # ClickHouse takes 3–5 minutes; Ctrl-C when all are Running
+
+# the UI only, restricted to your IP (the chart's own Service would also publish internal ports)
+MY_IP=$(curl -s https://checkip.amazonaws.com)
+sed "s|<YOUR_IP>|${MY_IP}|" k8s/monitoring/signoz-ui-service.yaml | kubectl apply -f -
+kubectl -n signoz get svc signoz-ui  # hostname
+```
+The release **must** be named `signoz` in namespace `signoz`: the services send to `signoz-otel-collector.signoz.svc.cluster.local:4317`.
+
+Pods that started before SigNoz was up reconnect on their own. If a service shows no data after a few minutes, restart it: `kubectl -n go-micro-shop rollout restart deploy`.
+
+**Use it (`http://<signoz-host>/`):**
+1. Create the admin account on first visit.
+2. Click around the shop (create an account, a product, an order) to generate traffic.
+3. **Services:** `graphql-gateway`, `account-service`, `catalog-service`, `order-service` with request rate, error rate and p99.
+4. **Traces:** open a `createOrder` trace. It shows the gateway → `order-service` → `account-service` / `catalog-service` → `INSERT` / Elasticsearch spans in one waterfall.
+5. **Logs:** filter `service.name = order-service`; any error log links to its trace (**View trace**).
+6. **Settings → General:** set retention (for example traces/logs 7 days, metrics 30 days) so ClickHouse's 20 Gi volume does not fill up.
+
+**Check what a pod sends** (if something is missing):
+```bash
+kubectl -n go-micro-shop exec deploy/account-service -- wget -qO- localhost:9464/metrics | head   # metrics endpoint
+kubectl -n go-micro-shop logs deploy/account-service | grep -i otlp                              # export errors
+kubectl -n signoz logs deploy/signoz-otel-collector --tail=50
+```
+
+---
+
+## Step 17 – Prove GitOps works
 
 1. Change something visible in the frontend (e.g. a heading in `frontend/src/pages/Home.tsx`), commit and push.
 2. Run the **`frontend`** job.
@@ -654,7 +699,7 @@ Use the `grafana-community` chart; the old `grafana/grafana` chart is deprecated
 
 ---
 
-## Step 17 – Teardown
+## Step 18 – Teardown
 
 **Order matters.** Load balancers and EBS volumes created *by Kubernetes* must be deleted before Terraform deletes the VPC, otherwise the destroy hangs.
 
@@ -662,6 +707,12 @@ Use the `grafana-community` chart; the old `grafana/grafana` chart is deprecated
 ```bash
 kubectl -n argocd delete application go-micro-shop-dev    # removes app, ALB, PVCs/EBS
 helm uninstall grafana prometheus -n monitoring
+helm uninstall signoz -n signoz
+# the ClickHouse resource keeps a finalizer once its operator is gone; clear it so the namespace can go
+kubectl -n signoz patch clickhouseinstallations.clickhouse.altinity.com/signoz-clickhouse \
+  -p '{"metadata":{"finalizers":[]}}' --type=merge
+kubectl -n signoz delete svc signoz-ui
+kubectl delete namespace signoz                            # removes the SigNoz PVCs/EBS volumes
 kubectl -n argocd delete svc argocd-server
 kubectl get svc,ingress -A | grep -i loadbalancer          # must print nothing
 ```
@@ -739,6 +790,6 @@ aws elbv2 describe-load-balancers --query 'LoadBalancers[].[DNSName,State.Code]'
 | Bastion command errors | Step 7 table |
 | Pipeline failures | Step 13 table |
 | Deployment failures | Step 14 table |
-| Browser can't reach a new load balancer | Step 14, Step 15 |
+| Browser can't reach a new load balancer | Step 14, Step 15, Step 16 |
 | Your IP changed | Update `terraform/jenkins-server/terraform.tfvars` + `terraform apply`; re-run the `loadBalancerSourceRanges` patches (Steps 8 and 15) with the new IP |
-| `terraform destroy` hangs on the VPC | a load balancer or ENI still exists, see Step 17 |
+| `terraform destroy` hangs on the VPC | a load balancer or ENI still exists, see Step 18 |
