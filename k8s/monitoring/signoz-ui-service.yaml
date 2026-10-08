@@ -8,6 +8,10 @@ kind: Service
 metadata:
   name: signoz-ui
   namespace: signoz
+  annotations:
+    # The AWS Load Balancer Controller creates an NLB for new LoadBalancer Services,
+    # and NLBs are internal (VPC-only) unless asked otherwise
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
 spec:
   type: LoadBalancer
   loadBalancerSourceRanges:

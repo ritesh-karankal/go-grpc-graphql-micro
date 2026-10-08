@@ -17,6 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-012](#inc-012--signoz-ui-not-reachable-load-balancer-created-as-internal) | 2026-10-09 | SigNoz / AWS LB Controller | SigNoz UI not reachable: load balancer created as `internal` | Medium | Fix applied |
 | [INC-011](#inc-011--update-deployment-file-fails-nothing-added-to-commit) | 2026-10-08 | Jenkins / GitOps | `Update Deployment file` fails: "nothing added to commit" | Low | Resolved |
 | [INC-010](#inc-010--backend-pipeline-aborted-after-60-minutes-in-owasp-dependency-check) | 2026-10-08 | Jenkins / OWASP | `backend` pipeline aborted after 60 minutes in OWASP Dependency-Check | Medium | Resolved |
 | [INC-009](#inc-009--argo-cd-ui-not-reachable-in-the-browser) | 2026-10-08 | Argo CD / Browser | Argo CD UI "not reachable" in the browser | Low | Resolved |
@@ -97,6 +98,136 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-012 – SigNoz UI not reachable: load balancer created as `internal`
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | `k8s/monitoring/signoz-ui-service.yaml`; Recreate guide Step 16 (SigNoz) |
+| **Severity** | Medium: the SigNoz UI was unreachable from outside the VPC; SigNoz itself was running |
+| **Status** | Fix applied: Service recreated with the `internet-facing` annotation; waiting for confirmation that the UI opens |
+
+### Summary
+The Service that exposes the SigNoz UI got a load balancer, but its hostname did not resolve from the internet. AWS showed it as a **Network Load Balancer with scheme `internal`**: private IPs only, reachable from inside the VPC only. The Service manifest (written as part of the SigNoz setup) had no `aws-load-balancer-scheme: internet-facing` annotation. With the **AWS Load Balancer Controller** installed, a newly created `type: LoadBalancer` Service becomes an NLB, and NLBs default to `internal`. Fixed by adding the annotation and recreating the Service, since a load balancer's scheme cannot be changed in place.
+
+### Background
+- A Kubernetes Service of `type: LoadBalancer` asks the cloud for a load balancer. On EKS, two different components can answer:
+
+  | Who handles it | When | What it creates | Default scheme |
+  |---|---|---|---|
+  | **Built-in AWS cloud provider** (legacy, in-tree) | Services the Load Balancer Controller didn't claim | **Classic** Load Balancer (`<hash>-<id>.<region>.elb.amazonaws.com`) | **internet-facing** |
+  | **AWS Load Balancer Controller** (installed in Step 7) | New `LoadBalancer` Services (its webhook sets `spec.loadBalancerClass: service.k8s.aws/nlb` at creation) | **Network** Load Balancer (`k8s-<ns>-<name>-<hash>.elb.<region>.amazonaws.com`) | **internal** |
+
+- The controller's webhook only acts when a Service is **created**. Existing Services that are later *patched* to `type: LoadBalancer` keep going to the built-in provider.
+- `service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing` tells the controller to give the NLB public IPs. `loadBalancerSourceRanges` still limits who may connect.
+- A load balancer's **scheme is fixed at creation**: going from internal to internet-facing means a new load balancer.
+
+### Timeline
+1. Steps 8 and 15: Argo CD, Prometheus and Grafana were exposed by **patching** their existing Services to `type: LoadBalancer`. All three got **Classic, internet-facing** load balancers and worked. (Argo CD also had the scheme annotation, which Classic LBs ignore.)
+2. Step 16: applied `signoz-ui-service.yaml`, a **new** Service with `type: LoadBalancer` and no scheme annotation.
+3. The hostname `k8s-signoz-signozui-<hash>.elb.eu-north-1.amazonaws.com` did not open in the browser.
+4. From the laptop: DNS did not resolve (`curl` exit code 6). AWS showed `type: network`, `scheme: internal`, targets `initial`.
+5. Listed all load balancers: only the SigNoz one was an internal NLB; the other three were internet-facing Classic LBs, and the app's ALB was internet-facing.
+6. Added the annotation to the manifest and recreated the Service.
+
+### What happened (symptom)
+Browser: site not reachable. From the laptop:
+
+    $ curl -s -o /dev/null -w 'http %{http_code}\n' --max-time 8 http://<LB_HOST>/
+    http 000           # curl exit code 6: could not resolve host
+
+    $ aws elbv2 describe-load-balancers ...
+    name: k8s-signoz-signozui-<hash>   type: network   scheme: internal   state: provisioning
+
+All load balancers at that moment:
+
+| Load balancer | Created by | Type | Scheme |
+|---|---|---|---|
+| app Ingress (`k8s-gomicros-...`) | LB Controller (Ingress) | application | internet-facing |
+| SigNoz UI (`k8s-signoz-signozui-...`) | LB Controller (new Service) | **network** | **internal** |
+| Argo CD, Prometheus, Grafana | built-in provider (patched Services) | classic | internet-facing |
+
+### How we got there
+`signoz-ui-service.yaml` was written to match how Prometheus and Grafana were exposed (type LoadBalancer + IP allowlist), without accounting for the fact that a **newly created** Service goes to the Load Balancer Controller, which has a different default.
+
+### Why (root cause)
+1. The AWS Load Balancer Controller was installed (Step 7) before the SigNoz Service was created (Step 16).
+2. When the Service was created, the controller's webhook claimed it, so an NLB was created.
+3. The manifest had no scheme annotation, so the NLB got the controller's default: `internal`.
+4. An internal NLB has only private IPs and its public DNS name does not resolve from the internet, so the browser couldn't reach it.
+
+The underlying gap: the manifest relied on a default, and the default depends on *which controller* handles the Service.
+
+### Impact
+- SigNoz UI unreachable from the laptop until the fix. SigNoz itself (collector, ClickHouse, query service) kept running and receiving telemetry.
+- No effect on the app, Argo CD, Prometheus or Grafana.
+
+### Resolution (step by step)
+1. **Check the scheme** (laptop):
+   ```bash
+   aws elbv2 describe-load-balancers --region eu-north-1 \
+     --query 'LoadBalancers[].[LoadBalancerName,Type,Scheme,State.Code]' --output table
+   ```
+   `internal` confirms the cause.
+2. **Add the annotation** to `k8s/monitoring/signoz-ui-service.yaml`:
+   ```yaml
+   metadata:
+     annotations:
+       service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+   ```
+3. **Recreate the Service** (bastion). The scheme can't change in place, so delete and re-apply:
+   ```bash
+   cd ~/go-grpc-graphql-micro && git pull
+   kubectl -n signoz delete svc signoz-ui
+   MY_IP=<laptop IP>
+   sed "s|<YOUR_IP>|${MY_IP}|" k8s/monitoring/signoz-ui-service.yaml | kubectl apply -f -
+   kubectl -n signoz get svc signoz-ui          # new hostname
+   ```
+4. **Verify** (laptop) after 2–4 minutes:
+   ```bash
+   aws elbv2 describe-load-balancers --region eu-north-1 \
+     --query "LoadBalancers[?starts_with(LoadBalancerName,'k8s-signoz')].[Scheme,State.Code]" --output text
+   # internet-facing  active
+   curl -s -o /dev/null -w '%{http_code}\n' http://<LB_HOST>/     # 200
+   ```
+
+### Code / config change
+`k8s/monitoring/signoz-ui-service.yaml`:
+
+```diff
+ metadata:
+   name: signoz-ui
+   namespace: signoz
++  annotations:
++    # The AWS Load Balancer Controller creates an NLB for new LoadBalancer Services,
++    # and NLBs are internal (VPC-only) unless asked otherwise
++    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+ spec:
+   type: LoadBalancer
+```
+
+### Lessons learned
+- On EKS, *which* controller handles a `LoadBalancer` Service decides the load balancer type **and** its defaults. Installing the AWS Load Balancer Controller changes the behaviour of every new LoadBalancer Service.
+- Never rely on a default for something security- or reachability-relevant. Say `internet-facing` or `internal` explicitly, plus a source allowlist.
+- The hostname format tells you who made the load balancer: `k8s-<ns>-<svc>-...` is the controller's NLB/ALB; `<hash>-<id>.<region>.elb...` is a Classic LB from the built-in provider.
+
+### How to approach it next time
+1. Load balancer hostname doesn't resolve or connect? First check its **scheme**: `aws elbv2 describe-load-balancers` (NLB/ALB) or `aws elb describe-load-balancers` (Classic).
+2. `internal` → add the scheme annotation and recreate the Service.
+3. `internet-facing` but timing out → check `loadBalancerSourceRanges` and your current IP.
+4. Targets `unhealthy` → check the pods and the Service's `targetPort` (bastion: `kubectl -n <ns> get pods,endpoints`).
+
+### Prevention / follow-up
+- Done: scheme annotation in `signoz-ui-service.yaml`.
+- Follow-up: the guide's Prometheus/Grafana steps work only because they *patch* existing Services. Make all exposed Services explicit (annotation, or `loadBalancerClass` + scheme), so behaviour doesn't depend on install order.
+- Optional: expose the admin UIs through one ALB Ingress with host or path rules, instead of one load balancer each (cheaper, and one place for TLS and allowlists).
+
+### References
+- AWS Load Balancer Controller: [Network Load Balancer (Service) — annotations, `aws-load-balancer-scheme`](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/service/annotations/#lb-scheme); [Service mutator webhook / `loadBalancerClass`](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/service/nlb/).
+- Kubernetes: [Service type LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer).
 
 ---
 
