@@ -8,6 +8,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@account_db:5432/${POSTGRES_DB}?sslmode=disable
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: on-failure
 
   catalog:
@@ -19,6 +22,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: http://catalog_db:9200
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: on-failure
 
   order:
@@ -36,6 +42,9 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@order_db:5432/${POSTGRES_DB}?sslmode=disable
       ACCOUNT_SERVICE_URL: account:8080
       CATALOG_SERVICE_URL: catalog:8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: on-failure
 
   graphql:
@@ -52,6 +61,9 @@ services:
       ACCOUNT_SERVICE_URL: account:8080
       CATALOG_SERVICE_URL: catalog:8080
       ORDER_SERVICE_URL: order:8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: on-failure
 
   frontend:
