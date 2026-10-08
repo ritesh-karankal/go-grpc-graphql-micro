@@ -37,7 +37,7 @@ pipeline {
 
         stage('Go Unit Tests') {
             steps {
-                sh 'go test ./account/... ./catalog/... ./order/... ./graphql/...'
+                sh 'go test ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
             }
         }
 
@@ -48,7 +48,7 @@ pipeline {
                         $SCANNER_HOME/bin/sonar-scanner \
                           -Dsonar.projectName=go-grpc-graphql-micro-backend \
                           -Dsonar.projectKey=go-grpc-graphql-micro-backend \
-                          -Dsonar.sources=account,catalog,order,graphql \
+                          -Dsonar.sources=account,catalog,order,graphql,telemetry \
                           -Dsonar.exclusions=**/pb/**,**/generated.go,**/models_gen.go \
                           -Dsonar.tests=. \
                           -Dsonar.test.inclusions=**/*_test.go
