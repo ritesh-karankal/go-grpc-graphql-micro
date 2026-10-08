@@ -453,6 +453,9 @@ For each: **Set Up → Locally → Use existing token** (your `jenkins` token) *
 **Do (laptop, not the bastion, which has no ECR permissions):**
 ```bash
 for repo in account catalog order graphql frontend; do
+  # skip repos that already exist, so the loop is safe to re-run
+  aws ecr describe-repositories --region eu-north-1 --repository-names $repo >/dev/null 2>&1 \
+    && { echo "$repo: already exists"; continue; }
   aws ecr create-repository --region eu-north-1 --repository-name $repo \
     --image-scanning-configuration scanOnPush=true \
     --image-tag-mutability IMMUTABLE \
