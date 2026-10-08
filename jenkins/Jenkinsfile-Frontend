@@ -124,11 +124,18 @@ pipeline {
 
                         git add k8s/base/kustomization.yaml
                         git diff --cached --stat
-                        git commit -m "chore(deploy): update frontend image to ${IMAGE_TAG}"
 
-                        # The backend pipeline may have pushed meanwhile
-                        git pull --rebase origin ${GIT_BRANCH}
-                        git push https://${GIT_USER}:${GITHUB_TOKEN}@github.com/ritesh-karankal/go-grpc-graphql-micro.git HEAD:${GIT_BRANCH}
+                        # Nothing to do if main already has these tags (e.g. a re-run, or a
+                        # build number that matches the current tag); git commit would fail.
+                        if git diff --cached --quiet; then
+                            echo "k8s/base/kustomization.yaml already at ${IMAGE_TAG}, nothing to commit"
+                        else
+                            git commit -m "chore(deploy): update frontend image to ${IMAGE_TAG}"
+
+                            # The backend pipeline may have pushed meanwhile
+                            git pull --rebase origin ${GIT_BRANCH}
+                            git push https://${GIT_USER}:${GITHUB_TOKEN}@github.com/ritesh-karankal/go-grpc-graphql-micro.git HEAD:${GIT_BRANCH}
+                        fi
                     '''
                 }
             }

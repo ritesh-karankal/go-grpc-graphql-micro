@@ -19,6 +19,10 @@ pipeline {
         TF_DIR           = 'terraform/eks-cluster'
         TF_IN_AUTOMATION = 'true'
         AWS_ACCOUNT_ID   = credentials('AWS_ACCOUNT_ID')
+        // The first build of a new job runs before the parameters exist (they are
+        // registered by properties() above), so default to a harmless dev plan.
+        TF_ENV           = "${params.Environment ?: 'dev'}"
+        TF_ACTION        = "${params.Terraform_Action ?: 'plan'}"
     }
 
     options {
@@ -38,7 +42,7 @@ pipeline {
                 sh '''
                     terraform -chdir=${TF_DIR} init -input=false -reconfigure \
                       -backend-config="bucket=go-grpc-micro-tfstate-${AWS_ACCOUNT_ID}" \
-                      -backend-config="key=eks-cluster/${Environment}/terraform.tfstate"
+                      -backend-config="key=eks-cluster/${TF_ENV}/terraform.tfstate"
                 '''
             }
         }
@@ -52,10 +56,10 @@ pipeline {
         stage('Plan') {
             steps {
                 script {
-                    def destroyFlag = (params.Terraform_Action == 'destroy') ? '-destroy' : ''
+                    def destroyFlag = (env.TF_ACTION == 'destroy') ? '-destroy' : ''
                     sh """
                         terraform -chdir=\${TF_DIR} plan -input=false ${destroyFlag} \
-                          -var-file=envs/\${Environment}.tfvars -out=tfplan
+                          -var-file=envs/\${TF_ENV}.tfvars -out=tfplan
                     """
                 }
             }
@@ -63,16 +67,16 @@ pipeline {
 
         stage('Approve') {
             when {
-                expression { params.Terraform_Action != 'plan' }
+                expression { env.TF_ACTION != 'plan' }
             }
             steps {
-                input message: "Run terraform ${params.Terraform_Action} on the ${params.Environment} EKS cluster?", ok: 'Proceed'
+                input message: "Run terraform ${env.TF_ACTION} on the ${env.TF_ENV} EKS cluster?", ok: 'Proceed'
             }
         }
 
         stage('Apply') {
             when {
-                expression { params.Terraform_Action != 'plan' }
+                expression { env.TF_ACTION != 'plan' }
             }
             steps {
                 sh 'terraform -chdir=${TF_DIR} apply -input=false tfplan'
@@ -82,7 +86,7 @@ pipeline {
         // The EKS API is private: Jenkins has no cluster access. Use the bastion.
         stage('Bastion Access') {
             when {
-                expression { params.Terraform_Action == 'apply' }
+                expression { env.TF_ACTION == 'apply' }
             }
             steps {
                 sh 'terraform -chdir=${TF_DIR} output -raw bastion_ssm_session'
