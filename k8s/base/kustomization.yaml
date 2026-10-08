@@ -19,6 +19,15 @@ resources:
   - gateway/frontend.yaml
   - ingress/ingress.yaml
 
+# Telemetry settings shared by the Go services (see telemetry/telemetry.go).
+# SigNoz is installed separately with Helm (k8s/monitoring/signoz-values.yaml).
+# Overlays set DEPLOYMENT_ENVIRONMENT; the name hash makes pods restart on change.
+configMapGenerator:
+  - name: otel-config
+    literals:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://signoz-otel-collector.signoz.svc.cluster.local:4317
+      - DEPLOYMENT_ENVIRONMENT=base
+
 images:
   - name: account
     newTag: "3"

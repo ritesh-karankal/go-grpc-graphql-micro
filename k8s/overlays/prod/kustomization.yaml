@@ -8,3 +8,9 @@ namespace: go-micro-shop
 resources:
   - ../../base
   - external-secrets.yaml
+
+configMapGenerator:
+  - name: otel-config
+    behavior: merge
+    literals:
+      - DEPLOYMENT_ENVIRONMENT=prod

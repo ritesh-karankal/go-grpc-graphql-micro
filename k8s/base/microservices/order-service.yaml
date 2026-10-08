@@ -13,6 +13,11 @@ spec:
     metadata:
       labels:
         app: order-service
+      # Scraped by the prometheus-community/prometheus chart (kubernetes-pods job)
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: order-service
@@ -21,6 +26,12 @@ spec:
           ports:
             - containerPort: 8080
               name: grpc
+            - containerPort: 9464
+              name: metrics
+          # OTEL_EXPORTER_OTLP_ENDPOINT and DEPLOYMENT_ENVIRONMENT (k8s/base/kustomization.yaml)
+          envFrom:
+            - configMapRef:
+                name: otel-config
           env:
             - name: POSTGRES_USER
               valueFrom:
@@ -43,6 +54,22 @@ spec:
               value: "account-service:8080"
             - name: CATALOG_SERVICE_URL
               value: "catalog-service:8080"
+            # Tag every span, metric and log with where it came from. SigNoz filters and
+            # groups by deployment.environment (not the newer deployment.environment.name)
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=$(DEPLOYMENT_ENVIRONMENT),k8s.namespace.name=$(K8S_NAMESPACE),k8s.pod.name=$(K8S_POD_NAME),k8s.node.name=$(K8S_NODE_NAME)"
           resources:
             requests:
               cpu: 50m
