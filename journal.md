@@ -17,6 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Open |
 | [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
 | [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Resolved |
 | [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
@@ -102,6 +103,89 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-017 – `Connection reset by peer` during a rollout: pods exit without draining
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | `telemetry/telemetry.go` › `ShutdownOnSignal`; the four Go services' `main`; Deployments in `k8s/base/` (no `preStop`, no grace period); ALB target group |
+| **Severity** | Medium: some requests fail on **every deploy**, which burns the SLO error budget each time Jenkins ships |
+| **Status** | Open: cause identified; fix (graceful shutdown + `preStop` + ALB readiness) proposed |
+
+### Summary
+During a load test, a few requests failed with `ConnectionResetError: [Errno 104] Connection reset by peer`. The run overlapped with Argo CD rolling out backend version 6. When Kubernetes replaces a pod, it sends `SIGTERM` while it is still removing the pod from the Service and the ALB. Our shutdown handler (`telemetry.ShutdownOnSignal`) flushes telemetry and calls `os.Exit(0)` straight away, without finishing in-flight requests or waiting for traffic to stop. Requests in that window were cut off. The same run also exposed a bug in the load generator: an unhandled reset crashed the simulated user's thread.
+
+### Background
+- **What Kubernetes does when it replaces a pod** (rolling update): at the same moment it (a) sends `SIGTERM` to the container (after running any `preStop` hook) and (b) starts removing the pod from Service endpoints. For an ALB with `target-type: ip`, it also starts **deregistering** the pod's IP from the target group. (b) takes seconds to spread (kube-proxy on every node, the AWS Load Balancer Controller, the ALB itself), so **new requests can still arrive after `SIGTERM`**.
+- The expected app behaviour on `SIGTERM`: keep serving briefly, stop accepting new connections, **finish in-flight requests**, then exit within `terminationGracePeriodSeconds` (default 30 s).
+- A `preStop` hook (e.g. sleep 15 s) delays `SIGTERM`, giving the ALB and kube-proxy time to stop routing to the pod first. Kubernetes has a built-in `sleep` action for this, so no shell is needed in the image.
+- The **AWS Load Balancer Controller's pod readiness gates** make a new pod count as Ready only once the ALB reports it healthy, so a rollout doesn't remove old pods before the new ones actually receive traffic.
+
+### Timeline
+1. 12:48:53 IST: the `backend` job pushed images `:6`; 12:48:55, the deploy commit landed on `main`.
+2. ~12:49–12:52: Argo CD synced and rolled every backend Deployment (2 replicas each, one pod at a time).
+3. A load-generator run (4 users) was in progress. Several requests failed with `Connection reset by peer`. Two of the simulated users' threads crashed with a traceback (load-generator bug, see below).
+4. Matched the timing: the errors fell in the rollout window.
+5. Read the shutdown path: `ShutdownOnSignal` → flush telemetry → `os.Exit(0)`. No graceful stop of the HTTP or gRPC servers. Manifests: no `preStop`, no `terminationGracePeriodSeconds`.
+
+### What happened (symptom)
+
+    File ".../scripts/loadgen.py", line 58, in gql
+      with urllib.request.urlopen(req, timeout=15) as r:
+    ...
+    ConnectionResetError: [Errno 104] Connection reset by peer
+
+Load generator summary afterwards: `progress: 1907 requests, 57 errors` (mostly the deliberate bad requests), with fewer active users after the crashed threads.
+
+### How we got there
+A deploy during live traffic, the normal case for a CI/CD pipeline. It hadn't shown before because earlier load runs didn't overlap a rollout.
+
+### Why (root cause)
+1. A rolling update terminates old pods while traffic is still routed to them for a few seconds.
+2. On `SIGTERM`, `ShutdownOnSignal` calls `os.Exit(0)` right after flushing telemetry: in-flight requests are dropped and new ones hit a closed socket, so the connection is reset.
+3. No `preStop` delay, so `SIGTERM` arrives before the ALB and kube-proxy have stopped sending traffic.
+4. (Load generator) `gql()` caught `URLError` but not a reset raised while *reading* the response (`ConnectionResetError`, an `OSError`), so the user thread died.
+
+### Impact
+- A handful of failed requests per rollout under load. With real users, every deploy would burn some error budget, invisible except as "random" resets.
+- Load test: two simulated users stopped early, so the run produced less traffic than configured.
+
+### Resolution (step by step)
+Done:
+1. **Load generator** catches `OSError` and `http.client.HTTPException`, counts them as errors, and lists network errors on their own line. Tested against a local server that resets every connection: no tracebacks, users keep running, correct totals (`10 requests, 10 errors` / `ConnectionResetError=8, URLError=2`).
+
+Proposed (to implement):
+2. **Graceful shutdown in the apps:** on `SIGTERM` → stop accepting (`http.Server.Shutdown` in the gateway, `grpc.Server.GracefulStop` in the services) → wait for in-flight requests → flush telemetry → exit.
+3. **Manifests:** `lifecycle.preStop.sleep.seconds: 15` and `terminationGracePeriodSeconds: 30` on the four Go Deployments.
+4. **ALB:** enable pod readiness gates (label the namespace `elbv2.k8s.aws/pod-readiness-gate-inject=enabled`) and shorten the target group's deregistration delay (e.g. 30 s) via the Ingress annotation `alb.ingress.kubernetes.io/target-group-attributes`.
+5. **Verify:** run the load generator, trigger `kubectl -n go-micro-shop rollout restart deploy`, and expect **0 network errors** and no `server_error` spike in SigNoz.
+
+### Code / config change
+- Done: `scripts/loadgen.py` (exception handling and reporting).
+- Pending: `telemetry/telemetry.go`, the services' `main` / `ListenGRPC`, `k8s/base/*` Deployments, `k8s/base/ingress/ingress.yaml`, namespace label.
+
+### Lessons learned
+- `os.Exit` in a signal handler is almost never right for a server: it skips draining.
+- Graceful shutdown in Kubernetes needs both sides: the app drains, and the platform (`preStop`, readiness gates) stops sending traffic first.
+- Deploys are a major source of SLO burn. Test "load during rollout" deliberately.
+- A load tester has to survive the failures it is meant to measure.
+
+### How to approach it next time
+1. Resets or 502s during a deploy? Line up the error times with the rollout (`kubectl rollout history`, the Argo CD sync time, image push time).
+2. Read the app's `SIGTERM` handling: does it drain, or exit?
+3. Check the Deployment for `preStop` and `terminationGracePeriodSeconds`, and the ALB target group's deregistration delay.
+4. Reproduce on purpose: load + `kubectl rollout restart`.
+
+### Prevention / follow-up
+- Implement steps 2–4, then make "load during rollout" part of the fault drill (C9).
+
+### References
+- Kubernetes: [Pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination); [Container lifecycle hooks — sleep action](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/).
+- AWS Load Balancer Controller: [Pod readiness gate](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/deploy/pod_readiness_gate/).
+- Go: [`http.Server.Shutdown`](https://pkg.go.dev/net/http#Server.Shutdown); [`grpc.Server.GracefulStop`](https://pkg.go.dev/google.golang.org/grpc#Server.GracefulStop).
 
 ---
 

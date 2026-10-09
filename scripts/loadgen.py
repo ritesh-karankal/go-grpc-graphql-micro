@@ -15,6 +15,7 @@ Requests carry "X-Synthetic: true", so the gateway records them as synthetic=tru
 SLOs can exclude them. Creates real data: accounts and products named "lt-...". Stdlib only.
 Prints a summary every 60 s and at the end.
 """
+import http.client
 import json
 import random
 import sys
@@ -58,8 +59,12 @@ def gql(query, variables=None, op="?"):
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read())
         ok = not data.get("errors")
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    # OSError covers URLError, timeouts and connection resets; HTTPException covers
+    # malformed or missing responses. Count them as errors, never kill the user thread.
+    except (OSError, http.client.HTTPException, ValueError) as e:
         data, ok = {}, False
+        with lock:
+            stats["net:" + type(e).__name__] += 1
     elapsed = time.time() - start
     with lock:
         stats[op + (" ok" if ok else " err")] += 1
@@ -143,9 +148,13 @@ def user(stop_at):
 
 def report(final=False):
     with lock:
-        total = sum(stats.values())
+        total = sum(v for k, v in stats.items() if not k.startswith("net:"))
         errors = sum(v for k, v in stats.items() if k.endswith(" err"))
         print(("FINAL" if final else "progress") + f": {total} requests, {errors} errors", flush=True)
+        network = {k[4:]: v for k, v in stats.items() if k.startswith("net:")}
+        if network:
+            print("  network errors (no GraphQL response): "
+                  + ", ".join(f"{k}={v}" for k, v in sorted(network.items())), flush=True)
         for op in sorted(latencies):
             xs = sorted(latencies[op])
             p95 = xs[max(int(len(xs) * 0.95) - 1, 0)]
