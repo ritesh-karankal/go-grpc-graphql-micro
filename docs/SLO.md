@@ -250,7 +250,7 @@ kubectl -n argocd patch application go-micro-shop-dev --type merge \
 
 **What else the drill found:**
 - **HTTP 200 on a failed checkout:** the trace's root span is `POST /graphql … 200`. Exactly why the SLIs use the GraphQL `outcome`, not HTTP status codes.
-- **Work after the caller gave up:** the gateway stopped waiting at 3.0 s, but order-service's `PostOrder` span ran for **11.33 s**. Cancellation isn't honoured somewhere in the database path ([INC-023](../journal.md#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s)).
+- **Work after the caller gave up:** the gateway stopped waiting at 3.0 s, but order-service's `PostOrder` span ran for **11.33 s**. Reproduced locally: the Postgres driver (`lib/pq`) can't abort a query on a *hung* connection (a pooled connection to the deleted pod), so it ignores the 3 s deadline ([INC-023](../journal.md#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s)).
 
 ![SLO dashboard during the drill](screenshots/slo-drill-dashboard.png)
 
@@ -271,7 +271,7 @@ Defining the SLIs, and testing them under load, exposed real problems. Each is w
 | [INC-014](../journal.md#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id): catalog crashed on an unknown product ID | one bad request could take down browse *and* checkout | nil check + regression test |
 | [INC-017](../journal.md#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining): pods exited on SIGTERM without draining | **every deploy** burned error budget | graceful shutdown, `preStop`, ALB readiness gates |
 | [INC-020](../journal.md#inc-020--grpc-traffic-not-balanced-across-replicas): gRPC pinned to one replica | second replica gave no capacity; latency SLO at risk under load | headless Services + `round_robin` |
-| [INC-023](../journal.md#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s): order-service kept working 11 s after the caller gave up (found by the drill) | wasted work during outages, slower recovery | open: bound DB connection attempts |
+| [INC-023](../journal.md#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s): order-service kept working 11 s after the caller gave up (found by the drill) | wasted work during outages, slower recovery | root cause reproduced (`lib/pq` ignores cancellation on a hung connection); fix: switch to `pgx` |
 | [INC-019](../journal.md#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested), [INC-022](../journal.md#inc-022--clickhouse-busy-logging-itself-internal-system-logs-outweigh-real-telemetry-20x): SigNoz sizing / ClickHouse self-logging | the measuring system itself was at risk of falling over | right-sized resources, disabled unused system logs |
 
 ## 10. Limitations and next steps

@@ -17,7 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
-| [INC-023](#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s) | 2026-10-09 | order-service / Postgres | Fault drill: order-service keeps working 11 s after the gateway gave up at 3 s | Medium | Open |
+| [INC-023](#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s) | 2026-10-09 | order-service / Postgres | Fault drill: order-service keeps working 11 s after the gateway gave up at 3 s | Medium | Root cause found |
 | [INC-022](#inc-022--clickhouse-busy-logging-itself-internal-system-logs-outweigh-real-telemetry-20x) | 2026-10-09 | SigNoz / ClickHouse | ClickHouse busy logging itself: internal system logs outweigh real telemetry ~20x | Medium | Fix ready |
 | [INC-021](#inc-021--quality-gate-error-again-go-only-credits-coverage-to-the-package-under-test) | 2026-10-09 | Jenkins / SonarQube | Quality gate `ERROR` again: Go only credits coverage to the package under test | Medium | Resolved |
 | [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Deployed, verifying |
@@ -119,7 +119,7 @@ Docs, source files or issues used to confirm the cause.
 | **Date** | 2026-10-09 |
 | **Where** | SLO fault drill (`order-db` scaled to 0); trace of a failed `CreateOrder`; `order-service` → Postgres |
 | **Severity** | Medium: during a database outage, order-service does work nobody waits for, which can pile up connections/goroutines and slow recovery |
-| **Status** | Open: observed in a trace; cause of the 11 s still being confirmed |
+| **Status** | Root cause found (reproduced locally): `lib/pq` can't abort a query on a hung connection; fix proposed |
 
 ### Summary
 During the planned SLO fault drill (orders database taken down on purpose), a failing checkout's trace showed the gateway giving up after **3.00 s** (its timeout) while **order-service's `PostOrder` kept running for 11.33 s** before failing with `INTERNAL: could not post order`. gRPC passes the deadline to the server, so order-service *knew* the caller had given up, but something in the database path didn't stop.
@@ -155,15 +155,30 @@ Evidence so far: order-service's error logs during the drill (`Failed to post or
 - During the drill: extra latency only on the server side; users had already got an error after 3 s.
 - At real traffic: stuck goroutines and connections in order-service for every failed checkout, for the whole outage, and a slower recovery afterwards.
 
+### Reproduction (local, real Postgres)
+A throwaway test connected `order`'s repository to a Postgres container, inserted one order (so the pool holds an open connection), broke the database in two different ways, then called `PutOrder` with the gateway's **3-second deadline**:
+
+| Database state | How | Result |
+|---|---|---|
+| stopped cleanly | `docker stop` (Postgres closes its connections, port closed) | returns in **~1 ms**: `dial tcp …: connect: connection refused` |
+| hung | `docker pause` (connections stay open, nothing answers) | **ignores the 3 s deadline: still blocked after 40 s** (both attempts) |
+
+The first matches the many instant `connection refused` log lines during the drill (new connections to a Service with no pods). The second matches the 11.33 s span: a request that picked up an **existing pooled connection to the deleted pod**. In the cluster it ended after ~11 s, most likely when the network reported the vanished pod IP as unreachable *(inferred, not measured)*; locally the frozen container never answers, so it blocks indefinitely.
+
+**Confirmed cause:** `lib/pq` handles context cancellation by sending a *cancel request to the server* over a new connection, and keeps reading from the original connection until the server responds. When the server is gone or hung, nobody responds: the deadline reaches the driver, but the blocked read isn't interrupted. (`lib/pq` is in maintenance mode; `pgx` instead closes or interrupts the connection when the context is cancelled.)
+
 ### Resolution (step by step)
-1. Open the trace's waterfall under order-service `PostOrder`; identify the long child span and its error. *(pending)*
-2. Depending on the cause: set a connect timeout in the DSN (`connect_timeout=2`), bound DB calls with the request context (already passed: verify it reaches the connector), and/or configure `db.SetConnMaxLifetime` / `SetMaxOpenConns` so a dead database fails fast.
-3. Re-run the drill: the order-service span should end at about the same time as the gateway's (≈ 3 s).
+1. Identify where the time goes. *(done: reproduction above)*
+2. **Fix (proposed):** switch the Postgres driver from `lib/pq` to **`pgx`** (`github.com/jackc/pgx/v5/stdlib`, through the same `database/sql` + `otelsql` setup), which interrupts I/O when the context is cancelled. `order/repository.go` uses `pq.CopyIn` for `order_products`, which has to become a plain multi-row `INSERT` (or pgx's own COPY). Also bound the pool: `SetConnMaxIdleTime`, so stale connections to a replaced pod are retired.
+3. **Prove it** with the same reproduction as a test: with a hung database, `PutOrder` must return within ~3 s with `context deadline exceeded`.
+4. Re-run the drill: the order-service span should end at about the same time as the gateway's (≈ 3 s).
 
 ### Code / config change
 Pending.
 
 ### Lessons learned
+- **"Database down" isn't one failure mode.** A cleanly closed port fails in 1 ms; a hung peer (deleted pod, network partition) can block far past every timeout. Test both.
+- Passing `ctx` down is necessary but not sufficient: the driver must be able to *act* on cancellation.
 - A fault drill tests more than the alert: the traces show how each service behaves *while* failing.
 - Every service in a call chain should stop when its caller stops. Timeouts are only half of it; honouring cancellation is the other half.
 
