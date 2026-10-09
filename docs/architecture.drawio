@@ -387,7 +387,7 @@
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
         <mxCell id="c127" value="read-only (Pod Identity)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;html=1;strokeColor=#C2255C;strokeWidth=2;endArrow=blockThin;endFill=1;endSize=6;fontSize=10;fontStyle=1;fontColor=#C2255C;labelBackgroundColor=#FFFFFF;labelBorderColor=none;spacing=2;jumpStyle=arc;jumpSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="c82" target="c66">
-          <mxGeometry x="-0.35" relative="1" as="geometry">
+          <mxGeometry x="-0.72" relative="1" as="geometry">
             <Array as="points">
               <mxPoint x="1365" y="768"/>
             </Array>
@@ -425,10 +425,10 @@
           <mxGeometry x="1235" y="915" width="40" height="40" as="geometry"/>
         </mxCell>
         <mxCell id="c203" value="&lt;b&gt;SigNoz UI&lt;/b&gt;&lt;br&gt;traces · logs · SLO dashboard&lt;br&gt;burn-rate alerts" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFF4F0;strokeColor=#F25733;fontSize=10;fontColor=#232F3E;align=center;verticalAlign=middle;fontFamily=Helvetica;" vertex="1" parent="1">
-          <mxGeometry x="1345" y="905" width="150" height="60" as="geometry"/>
+          <mxGeometry x="1390" y="905" width="150" height="60" as="geometry"/>
         </mxCell>
         <mxCell id="c204" value="&lt;b&gt;SLOs&lt;/b&gt; per GraphQL operation (checkout 99.5%, browse 99.9%; latency 99% under 500 / 250 ms), measured at the gateway; client errors and synthetic traffic excluded. Multi-window burn-rate alerts; validated by a fault drill." style="text;html=1;whiteSpace=wrap;fontSize=9;fontColor=#5C6773;fontStyle=0;align=left;verticalAlign=middle;fontFamily=Helvetica;" vertex="1" parent="1">
-          <mxGeometry x="1515" y="900" width="200" height="125" as="geometry"/>
+          <mxGeometry x="1550" y="900" width="168" height="125" as="geometry"/>
         </mxCell>
         <mxCell id="c205" value="store" style="endArrow=blockThin;endFill=1;html=1;strokeColor=#868E96;strokeWidth=1.5;fontSize=9;fontColor=#5C6773;labelBackgroundColor=#FFFFFF;fontFamily=Helvetica;" edge="1" parent="1" source="c201" target="c202">
           <mxGeometry relative="1" as="geometry"/>
