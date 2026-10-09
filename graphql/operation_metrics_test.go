@@ -149,8 +149,8 @@ func TestSyntheticMiddleware(t *testing.T) {
 	}
 }
 
-// The SLI labels must also land on the span in the context (the request's root span),
-// so traces can be filtered the same way as the SLO metrics.
+// The SLI labels must also land on the span in the context (otelgqlgen's operation
+// span in the real server), so traces can be filtered the same way as the SLO metrics.
 func TestOperationAttributesOnSpan(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))

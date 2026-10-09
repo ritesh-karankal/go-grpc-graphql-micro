@@ -11,7 +11,8 @@ Usage:
     python3 scripts/loadgen.py http://localhost:8000 60 2          # local docker compose
     python3 scripts/loadgen.py http://<ALB address> 300 4           # EKS
 
-Requests carry "X-Synthetic: true", so the gateway records them as synthetic=true and
+Operation names match the frontend's (Products, Accounts, CreateOrder, ...), so test
+traffic looks like real users in traces. Requests carry "X-Synthetic: true", so the gateway records them as synthetic=true and
 SLOs can exclude them. Creates real data: accounts and products named "lt-...". Stdlib only.
 Prints a summary every 60 s and at the end.
 """
@@ -73,36 +74,36 @@ def gql(query, variables=None, op="?"):
 
 
 def load_ids():
-    d = gql("{ products(pagination:{skip:0,take:50}) { id } accounts(pagination:{skip:0,take:50}) { id } }", op="seed")
+    d = gql("query Seed { products(pagination:{skip:0,take:50}) { id } accounts(pagination:{skip:0,take:50}) { id } }", op="seed")
     known["products"] = [p["id"] for p in d.get("products") or []]
     known["accounts"] = [a["id"] for a in d.get("accounts") or []]
 
 
 def browse():
     skip = random.choice([0, 0, 0, 10, 20])
-    gql("query($s:Int){ products(pagination:{skip:$s,take:12}) { id name price } }", {"s": skip}, "browse")
+    gql("query Products($s:Int){ products(pagination:{skip:$s,take:12}) { id name price } }", {"s": skip}, "browse")
 
 
 def search():
-    gql("query($q:String){ products(query:$q, pagination:{skip:0,take:10}) { id name price } }",
+    gql("query Products($q:String){ products(query:$q, pagination:{skip:0,take:10}) { id name price } }",
         {"q": random.choice(SEARCH_TERMS)}, "search")
 
 
 def view_product():
     if known["products"]:
-        gql("query($id:String){ products(id:$id) { id name description price } }",
+        gql("query Products($id:String){ products(id:$id) { id name description price } }",
             {"id": random.choice(known["products"])}, "view_product")
 
 
 def view_account():
     if known["accounts"]:
-        gql("query($id:String){ accounts(id:$id) { id name orders { id createdAt totalPrice products { name quantity price } } } }",
+        gql("query Accounts($id:String){ accounts(id:$id) { id name orders { id createdAt totalPrice products { name quantity price } } } }",
             {"id": random.choice(known["accounts"])}, "view_account")
 
 
 def sign_up():
     name = "lt-" + "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=6))
-    d = gql("mutation($n:String!){ createAccount(account:{name:$n}) { id } }", {"n": name}, "create_account")
+    d = gql("mutation CreateAccount($n:String!){ createAccount(account:{name:$n}) { id } }", {"n": name}, "create_account")
     if d.get("createAccount"):
         with lock:
             known["accounts"].append(d["createAccount"]["id"])
@@ -113,13 +114,13 @@ def place_order():
         return
     picks = random.sample(known["products"], k=min(len(known["products"]), random.randint(1, 3)))
     items = [{"id": pid, "quantity": random.randint(1, 3)} for pid in picks]
-    gql("mutation($a:String!,$p:[OrderProductInput!]!){ createOrder(order:{accountId:$a, products:$p}) { id totalPrice } }",
+    gql("mutation CreateOrder($a:String!,$p:[OrderProductInput!]!){ createOrder(order:{accountId:$a, products:$p}) { id totalPrice } }",
         {"a": random.choice(known["accounts"]), "p": items}, "create_order")
 
 
 def add_product():
     name, desc, price = random.choice(NEW_PRODUCTS)
-    d = gql("mutation($n:String!,$d:String!,$p:Float!){ createProduct(product:{name:$n,description:$d,price:$p}) { id } }",
+    d = gql("mutation CreateProduct($n:String!,$d:String!,$p:Float!){ createProduct(product:{name:$n,description:$d,price:$p}) { id } }",
             {"n": name, "d": desc, "p": price}, "create_product")
     if d.get("createProduct"):
         with lock:
@@ -129,10 +130,10 @@ def add_product():
 def bad_request():
     """The caller's mistakes: should count as client_error, not against the SLO."""
     if random.random() < 0.5:
-        gql('mutation($p:[OrderProductInput!]!){ createOrder(order:{accountId:"does-not-exist", products:$p}) { id } }',
+        gql('mutation CreateOrder($p:[OrderProductInput!]!){ createOrder(order:{accountId:"does-not-exist", products:$p}) { id } }',
             {"p": [{"id": "does-not-exist", "quantity": 1}]}, "bad_order")
     else:
-        gql('{ accounts(id:"does-not-exist") { id name } }', op="bad_account")
+        gql('query Accounts { accounts(id:"does-not-exist") { id name } }', op="bad_account")
 
 
 ACTIONS = [(browse, 35), (search, 15), (view_product, 10), (view_account, 15),

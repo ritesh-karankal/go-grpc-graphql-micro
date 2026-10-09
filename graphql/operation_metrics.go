@@ -34,9 +34,9 @@ const (
 // In Prometheus: graphql_server_operations_total and
 // graphql_server_operation_duration_seconds_bucket.
 //
-// The same attributes go on the trace's root span (the otelhttp request span: this
-// extension is registered after otelgqlgen, so it runs outside the GraphQL span), so an
-// SLO panel and the traces behind it can be filtered with the same labels.
+// The same attributes go on the GraphQL operation span (gqlgen runs extensions in
+// registration order from the outside in, so this one runs inside otelgqlgen's span),
+// so an SLO panel and the traces behind it can be filtered with the same labels.
 type operationMetrics struct {
 	count    metric.Int64Counter
 	duration metric.Float64Histogram
