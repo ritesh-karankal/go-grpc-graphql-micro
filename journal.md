@@ -17,6 +17,8 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Open |
+| [INC-019](#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested) | 2026-10-09 | SigNoz / capacity | SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested | Medium | Fix ready |
 | [INC-018](#inc-018--kubectl-top-fails-metrics-api-not-available) | 2026-10-09 | Kubernetes / EKS add-ons | `kubectl top` fails: `Metrics API not available` | Low | Fix ready |
 | [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Open |
 | [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
@@ -104,6 +106,185 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-020 – gRPC traffic not balanced across replicas
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | gRPC clients (`account/client.go`, `catalog/client.go`, `order/client.go`) and the ClusterIP Services `account-service`, `catalog-service`, `order-service` |
+| **Severity** | Medium: the second replica of each gRPC service adds failover but little or no capacity |
+| **Status** | Open: fix proposed (headless Services + `round_robin`) |
+
+### Summary
+During a 110-user load test, `kubectl top pods` showed one `order-service` pod at **55m CPU** and the other at **1m**: idle for the whole test. `catalog-service` was uneven too (82m vs 37m). gRPC sends all requests from one client over **one long-lived HTTP/2 connection**, and a Kubernetes ClusterIP Service balances **connections, not requests**. Each client therefore sticks to whichever pod it reached first.
+
+### Background
+- A ClusterIP Service is one virtual IP. kube-proxy picks a backend pod **when a TCP connection opens**. Every request on that connection goes to the same pod.
+- HTTP/1.1 clients open many short connections, so traffic spreads naturally. **gRPC (HTTP/2) multiplexes all requests over one connection** and keeps it open, so there's no re-balancing.
+- Our clients dial `dns:///order-service:8080`. DNS returns the single ClusterIP, and gRPC's default policy (`pick_first`) uses one connection.
+- Standard fix: a **headless Service** (`clusterIP: None`) makes DNS return **every pod IP**, and the client policy **`round_robin`** keeps a connection to each pod and spreads requests across them. Alternatives: a service mesh or an L7 proxy.
+
+### Timeline
+1. Load test: 110 users, 3 minutes, ~70 requests/s, 99.99% success for real operations.
+2. `kubectl -n go-micro-shop top pods` during the test: `order-service-…7585x 55m`, `order-service-…78kzj 1m`; `catalog-service-…46w6r 82m`, `…vmttf 37m`.
+3. Matched against the client code: `grpc.NewClient("dns:///"+url, …)` with no load-balancing config, which means `pick_first` over a single ClusterIP.
+
+### What happened (symptom)
+
+    NAME                               CPU(cores)
+    catalog-service-78dfc9bbff-46w6r   82m
+    catalog-service-78dfc9bbff-vmttf   37m
+    order-service-7ff57b9f69-7585x     55m
+    order-service-7ff57b9f69-78kzj     1m      <- idle under load
+
+### How we got there
+The standard Kubernetes Service, used with gRPC clients on default settings.
+
+### Why (root cause)
+1. Each gRPC client keeps one HTTP/2 connection to `order-service:8080`.
+2. kube-proxy balances that connection once, at connect time.
+3. All requests from that client go to one pod. With only two gateway pods as clients, both can land on the same `order-service` pod.
+
+### Impact
+- Effective capacity of each gRPC service is about **one pod**, not two. Scaling replicas or adding an HPA would barely help.
+- One pod takes all the load, so its latency degrades first.
+- Not visible in error rates. It only shows up as uneven CPU or uneven span counts per pod.
+
+### Resolution (step by step) — proposed
+1. **Confirm in SigNoz:** Traces → `service.name = order-service` → group by `k8s.pod.name`. Expect nearly all spans on one pod.
+2. **Headless Services** for `account-service`, `catalog-service` and `order-service`: `clusterIP: None`. (A headless Service can't change in place from ClusterIP, so Argo CD must replace it; the gateway's Service stays as it is, since the ALB uses pod IPs anyway.)
+3. **Client policy:** add `grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`)` to the three `NewClient` functions.
+4. **Verify:** re-run the load test → both replicas of each service show similar CPU and span counts.
+
+### Code / config change
+Pending.
+
+### Lessons learned
+- Kubernetes Services load-balance **connections**. For long-lived protocols (gRPC, WebSockets, database pools) that is not request balancing.
+- Uneven CPU across identical replicas is the tell-tale sign. Check per-pod numbers, not only per-service averages.
+
+### How to approach it next time
+1. Compare CPU per replica (`kubectl top pods`) and span counts per `k8s.pod.name` in SigNoz.
+2. Check the client: DNS target, LB policy (`pick_first` default), connection reuse.
+3. Check the Service: ClusterIP vs headless.
+
+### Prevention / follow-up
+- Apply the fix, then add an HPA for the gateway (now that metrics-server exists, INC-018).
+
+### References
+- Kubernetes: [Headless Services](https://kubernetes.io/docs/concepts/services-networking/service/#headless-services).
+- gRPC: [Load balancing](https://grpc.io/docs/guides/load-balancing/); [Kubernetes blog: gRPC load balancing on Kubernetes without tears](https://kubernetes.io/blog/2018/11/07/grpc-load-balancing-on-kubernetes-without-tears/).
+
+---
+
+## INC-019 – SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | `k8s/monitoring/signoz-values.yaml` (`clickhouse.resources`, `clickhouse.zookeeper`) |
+| **Severity** | Medium: ZooKeeper could be OOM-killed (SigNoz then stops storing telemetry); one node ran at up to 88% CPU |
+| **Status** | Fix ready: values updated and rendered; waiting for `helm upgrade` |
+
+### Summary
+The 110-user load test showed one node at **78–88% CPU** while the other sat at ~25%. The app pods only used ~500m in total. `kubectl top pods -A` showed the heaviest workload is **SigNoz's ClickHouse**: **767m CPU and 1.2Gi memory even after the test ended**, while its request in our values was only 200m / 1Gi. The same look found a real bug: **ZooKeeper's Java heap is 1024 MB by default, but our values capped its container at 512Mi**. It was at 432Mi (84%), so one busy period away from being killed. Fixed in `signoz-values.yaml`: `heapSize: 256`, and ClickHouse requests raised to what was measured.
+
+### Background
+- **Requests vs limits:** the scheduler places pods by their **requests**; **limits** cap actual use. Requests far below real use make the scheduler overpack a node. A memory limit below what the process may use means an **OOM kill**.
+- **ClickHouse** (SigNoz's database) writes incoming telemetry as small "parts", then **merges** them in the background. After a burst of ingestion it keeps using CPU for a while, which is why it was still at 767m after the test.
+- **ZooKeeper** coordinates ClickHouse. It's a Java app: `ZOO_HEAP_SIZE` sets the heap (`-Xmx`). The JVM also needs non-heap memory (metaspace, threads, buffers), so the container limit must be comfortably above the heap.
+- Per-span telemetry cost scales with traffic. SLIs come from **metrics** (pre-aggregated, cheap), which is one reason not to compute them from traces.
+
+### Timeline
+1. Load test with 110 users. `kubectl top nodes`: node A 1.5–1.7 cores (78–88%), node B 0.4–0.5 cores (21–27%).
+2. App pods at peak: gateway ~75m ×2, catalog 82m+37m, order 55m, catalog-db 137m, so roughly 500m in total. Not enough to explain node A.
+3. After the test, `kubectl top pods -A`: `chi-signoz-clickhouse… 767m 1228Mi`, `signoz-zookeeper-0 13m 432Mi`; everything else small.
+4. Compared with `signoz-values.yaml`: ClickHouse requests 200m/1Gi, limit 2Gi; ZooKeeper limit 512Mi.
+5. Rendered the chart: `ZOO_HEAP_SIZE=1024` (chart default `clickhouse.zookeeper.heapSize: 1024`). That heap can't fit in 512Mi.
+6. Updated the values; re-rendered: `ZOO_HEAP_SIZE=256`; ClickHouse 500m / 1536Mi request, 3Gi limit.
+
+### What happened (symptom)
+
+    NAMESPACE  NAME                                  CPU(cores)  MEMORY(bytes)
+    signoz     chi-signoz-clickhouse-cluster-0-0-0   767m        1228Mi      <- after the load test
+    signoz     signoz-zookeeper-0                    13m         432Mi       <- limit 512Mi, heap allowed 1024 MB
+
+    ip-10-10-29-208 ...   1705m   88%     <- node running ClickHouse during the test
+    ip-10-10-45-166 ...    523m   27%
+
+### How we got there
+The SigNoz values were sized by guesswork before there was real traffic. The ZooKeeper limit was set without checking the chart's heap default.
+
+### Why (root cause)
+1. ClickHouse's real usage (~0.8+ cores under ingestion and merging) was far above its 200m request, so the scheduler treated its node as having free capacity it didn't have.
+2. ZooKeeper's container limit (512Mi) was **smaller than its configured heap** (1024 MB). As the heap grows, the container hits the limit and gets OOM-killed.
+
+### Impact
+- No outage yet. Risks: ZooKeeper OOM → ClickHouse can't coordinate → telemetry not stored; a hot node → throttling or evictions of other pods on it (including app pods).
+- Telemetry costs more CPU than the app at this traffic level: an important capacity-planning fact.
+
+### Resolution (step by step)
+1. **Find the heavy pods:** `kubectl top pods -A --sort-by=cpu | head` (needs metrics-server, INC-018).
+2. **Compare usage with requests/limits** in the values file.
+3. **Check JVM heap vs container limit** for Java workloads: render the chart and look for heap settings:
+   ```bash
+   helm template signoz signoz/signoz --version 0.145.0 -f k8s/monitoring/signoz-values.yaml | grep -A1 ZOO_HEAP_SIZE
+   ```
+4. **Fix the values** (diff below) and render again to confirm.
+5. **Apply** (bastion):
+   ```bash
+   cd ~/go-grpc-graphql-micro && git pull
+   helm upgrade signoz signoz/signoz -n signoz --version 0.145.0 -f k8s/monitoring/signoz-values.yaml
+   kubectl -n signoz get pods -w      # zookeeper and clickhouse restart; ~2-5 min
+   ```
+   Telemetry pauses briefly while they restart; the services' exporters retry (see INC-013).
+6. **Verify:** `kubectl -n signoz top pods` → ZooKeeper well under 512Mi; SigNoz shows new data.
+
+### Code / config change
+`k8s/monitoring/signoz-values.yaml`:
+```diff
+ clickhouse:
+   resources:
+     requests:
+-      cpu: 200m
+-      memory: 1Gi
++      cpu: 500m
++      memory: 1536Mi
+     limits:
+-      memory: 2Gi
++      memory: 3Gi
+   zookeeper:
++    heapSize: 256
+     resources:
+       requests:
+         cpu: 50m
+-        memory: 256Mi
++        memory: 384Mi
+       limits:
+         memory: 512Mi
+```
+
+### Lessons learned
+- Size from **measurements under load**, not guesses. A load test is a capacity test for the observability stack too.
+- For Java workloads, the container memory limit must exceed the configured heap plus overhead; check the chart's defaults.
+- Telemetry has a cost. At high volume, consider trace **sampling** (SLIs stay accurate because they come from unsampled metrics) and giving SigNoz its own node.
+
+### How to approach it next time
+1. Node hot? `kubectl top pods -A --sort-by=cpu` and `kubectl get pods -A -o wide` to see which pods sit on that node.
+2. Compare top consumers' usage with their requests (`kubectl get pod <p> -o jsonpath='{.spec.containers[*].resources}'`).
+3. Java pods: compare heap flags (`-Xmx`, `*_HEAP_SIZE`) with the memory limit.
+
+### Prevention / follow-up
+- Optional: a dedicated node (or node group with a taint) for SigNoz, so observability load can't starve the app.
+- Optional: trace sampling (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, e.g. 0.25) if traffic grows.
+
+### References
+- Kubernetes: [Resource requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
+- ClickHouse: [MergeTree background merges](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree).
+- SigNoz chart: `clickhouse.zookeeper.heapSize` (Bitnami ZooKeeper chart, `ZOO_HEAP_SIZE`).
 
 ---
 
