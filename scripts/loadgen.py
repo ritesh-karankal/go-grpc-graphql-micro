@@ -11,7 +11,8 @@ Usage:
     python3 scripts/loadgen.py http://localhost:8000 60 2          # local docker compose
     python3 scripts/loadgen.py http://<ALB address> 300 4           # EKS
 
-Creates real data: accounts and products named "lt-...". Stdlib only.
+Requests carry "X-Synthetic: true", so the gateway records them as synthetic=true and
+SLOs can exclude them. Creates real data: accounts and products named "lt-...". Stdlib only.
 Prints a summary every 60 s and at the end.
 """
 import json
@@ -48,7 +49,10 @@ known = {"products": [], "accounts": []}
 def gql(query, variables=None, op="?"):
     """Send one GraphQL request and record its outcome and latency under op."""
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
-    req = urllib.request.Request(GQL, data=body, headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(GQL, data=body, headers={
+        "Content-Type": "application/json",
+        "X-Synthetic": "true",  # lets SLOs exclude this traffic
+    })
     start = time.time()
     try:
         with urllib.request.urlopen(req, timeout=15) as r:

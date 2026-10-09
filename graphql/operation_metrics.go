@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,11 +28,15 @@ const (
 
 // operationMetrics records, per GraphQL operation:
 //
-//	graphql.server.operations          counter    {operation, operation_type, outcome}
-//	graphql.server.operation.duration  histogram  {operation, operation_type, outcome}
+//	graphql.server.operations          counter    {operation, operation_type, outcome, synthetic}
+//	graphql.server.operation.duration  histogram  {operation, operation_type, outcome, synthetic}
 //
 // In Prometheus: graphql_server_operations_total and
 // graphql_server_operation_duration_seconds_bucket.
+//
+// The same attributes go on the trace's root span (the otelhttp request span: this
+// extension is registered after otelgqlgen, so it runs outside the GraphQL span), so an
+// SLO panel and the traces behind it can be filtered with the same labels.
 type operationMetrics struct {
 	count    metric.Int64Counter
 	duration metric.Float64Histogram
@@ -89,11 +95,15 @@ func (m *operationMetrics) InterceptResponse(ctx context.Context, next graphql.R
 		outcome = outcomeClientError
 	}
 
-	attrs := metric.WithAttributes(
+	kv := []attribute.KeyValue{
 		attribute.String("operation", operation),
 		attribute.String("operation_type", opType),
 		attribute.String("outcome", outcome),
-	)
+		attribute.Bool("synthetic", isSynthetic(ctx)),
+	}
+	trace.SpanFromContext(ctx).SetAttributes(kv...)
+
+	attrs := metric.WithAttributes(kv...)
 	m.count.Add(ctx, 1, attrs)
 	m.duration.Record(ctx, time.Since(start).Seconds(), attrs)
 	return resp
@@ -158,4 +168,24 @@ func isClientError(e *gqlerror.Error) bool {
 	default:
 		return false
 	}
+}
+
+// Synthetic traffic (load tests, probes) sends "X-Synthetic: true". It is recorded as
+// synthetic=true so SLOs can count real users only. Anyone can set the header; it only
+// affects how requests are counted, not how they are served.
+
+type syntheticKey struct{}
+
+func syntheticMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("X-Synthetic"), "true") {
+			r = r.WithContext(context.WithValue(r.Context(), syntheticKey{}, true))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isSynthetic(ctx context.Context) bool {
+	v, _ := ctx.Value(syntheticKey{}).(bool)
+	return v
 }

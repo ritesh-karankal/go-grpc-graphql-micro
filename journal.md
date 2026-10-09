@@ -17,8 +17,8 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
-| [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Fix ready |
-| [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Fix ready |
+| [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
+| [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Resolved |
 | [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
 | [INC-013](#inc-013--signoz-shows-youre-not-sending-any-data-yet) | 2026-10-09 | SigNoz / OpenTelemetry | SigNoz shows "You're not sending any data yet" | Medium | Resolved |
 | [INC-012](#inc-012--signoz-ui-not-reachable-load-balancer-created-as-internal) | 2026-10-09 | SigNoz / AWS LB Controller | SigNoz UI not reachable: load balancer created as `internal` | Medium | Resolved |
@@ -112,7 +112,7 @@ Docs, source files or issues used to confirm the cause.
 | **Date** | 2026-10-09 |
 | **Where** | Jenkins job `backend` › stage **Quality Check** (`waitForQualityGate abortPipeline: true`); SonarQube project `go-grpc-graphql-micro-backend`; `jenkins/Jenkinsfile-Backend` |
 | **Severity** | Medium: the gate blocked the build (by design), so the SLI/metrics change could not ship |
-| **Status** | Fix ready: pipeline sends a coverage report; `PostOrder` tested; new-code coverage ~87% locally; waiting for the next `backend` run |
+| **Status** | Resolved: build #5 passed the quality gate with the coverage report; images `:5` deployed |
 
 ### Summary
 The first backend build after the "SLI-ready errors and GraphQL operation metrics" commit stopped at **Quality Check**: SonarQube's quality gate returned `ERROR`. Its per-file view showed every new line as **uncovered**, 92 lines across the six changed files, although the commit added unit tests. The pipeline ran `go test` but **never produced or uploaded a coverage report**, so SonarQube counted new-code coverage as 0%, below the *Sonar way* gate's 80%. Earlier builds had passed only because there was no "new code" yet. Fix: generate `coverage.out` in the test stage, pass it to the scanner, exclude startup wiring from coverage, and add the missing tests for `order-service`'s `PostOrder`.
@@ -177,6 +177,7 @@ The first commit with real changes to existing code since the project's first an
 5. **Exclude startup wiring** from coverage (`**/main.go`, `**/cmd/**`): it only connects components and is exercised by running the service, not by unit tests.
 6. **Pipeline change** (diff below). Local estimate of new-code coverage: **87%** (≥ 80%).
 7. **Verify:** push, run `backend` → Quality Check `Quality gate is 'OK'`; SonarQube shows a non-zero coverage on new code.
+   Result: build #5 passed the gate, pushed `account/catalog/order/graphql:5`, committed the tag, and Argo CD deployed it. The live API now answers an unknown account with `code = NotFound` (before: `code = Unknown`).
 
 ### Code / config change
 `jenkins/Jenkinsfile-Backend`:
@@ -225,7 +226,7 @@ New test: `order/post_order_test.go`.
 | **Date** | 2026-10-09 |
 | **Where** | Browser → `http://<JENKINS_IP>:9000` (SonarQube); `terraform/jenkins-server` security group `jenkins_sg` (`admin_cidrs`) |
 | **Severity** | Low: blocked access to the SonarQube UI (needed to read a failed quality gate); Jenkins and the pipelines were unaffected |
-| **Status** | Fix ready: `terraform.tfvars` updated, `terraform plan` shows 1 in-place change; waiting for `terraform apply` |
+| **Status** | Resolved: `terraform apply` updated the 9000 rule in place; SonarQube reachable again |
 
 ### Summary
 The SonarQube UI stopped loading: the browser just spun until it timed out. Jenkins on port 8080 on the same server answered immediately. The server's security group lets **anyone** reach 8080 (GitHub webhooks need it) but only **one admin IP** reach 9000. The laptop's public IP had **changed** since the server was created (home ISPs reassign IPs), so its connections to 9000 were silently dropped. The fix is to put the new IP in `terraform.tfvars` and apply, so the code and AWS stay in sync.

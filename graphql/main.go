@@ -63,7 +63,7 @@ func main() {
 	}
 	graphqlServer.Use(opMetrics)
 
-	http.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(graphqlServer), "graphql"))
+	http.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(syntheticMiddleware(graphqlServer)), "graphql"))
 	http.Handle("/playground", corsMiddleware(playground.Handler("ritesh", "/graphql")))
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

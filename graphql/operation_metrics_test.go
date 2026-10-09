@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -88,6 +92,7 @@ func TestOperationMetricsOutcome(t *testing.T) {
 				attribute.String("operation", tt.wantOperation),
 				attribute.String("operation_type", tt.wantType),
 				attribute.String("outcome", tt.wantOutcome),
+				attribute.Bool("synthetic", false),
 			)
 			assertCounted(t, rm, want)
 		})
@@ -123,6 +128,54 @@ func assertCounted(t *testing.T, rm metricdata.ResourceMetrics, want attribute.S
 	for _, name := range []string{"graphql.server.operations", "graphql.server.operation.duration"} {
 		if !found[name] {
 			t.Errorf("metric %s not recorded", name)
+		}
+	}
+}
+
+func TestSyntheticMiddleware(t *testing.T) {
+	for header, want := range map[string]bool{"true": true, "TRUE": true, "": false, "false": false} {
+		var got bool
+		h := syntheticMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			got = isSynthetic(r.Context())
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/graphql", nil)
+		if header != "" {
+			req.Header.Set("X-Synthetic", header)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		if got != want {
+			t.Errorf("X-Synthetic=%q: synthetic = %v, want %v", header, got, want)
+		}
+	}
+}
+
+// The SLI labels must also land on the span in the context (the request's root span),
+// so traces can be filtered the same way as the SLO metrics.
+func TestOperationAttributesOnSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	m, err := newOperationMetrics(sdkmetric.NewMeterProvider())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, span := tp.Tracer("test").Start(operationCtx(ast.Mutation, "createOrder"), "graphql")
+	ctx = context.WithValue(ctx, syntheticKey{}, true)
+	m.InterceptResponse(ctx, func(context.Context) *graphql.Response {
+		return &graphql.Response{Errors: gqlerror.List{resolverErr(status.Error(codes.Internal, "db down"))}}
+	})
+	span.End()
+
+	got := map[attribute.Key]attribute.Value{}
+	for _, kv := range recorder.Ended()[0].Attributes() {
+		got[kv.Key] = kv.Value
+	}
+	want := map[attribute.Key]string{
+		"operation": "createOrder", "operation_type": "mutation", "outcome": outcomeServerError, "synthetic": "true",
+	}
+	for k, v := range want {
+		if got[k].Emit() != v {
+			t.Errorf("span attribute %s = %q, want %q", k, got[k].Emit(), v)
 		}
 	}
 }
