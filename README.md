@@ -53,7 +53,7 @@ From a planned **fault drill**: the orders database was taken down while simulat
 |---|---|
 | ![Order history](docs/screenshots/app-orders.png) | ![Account](docs/screenshots/app-account.png) |
 
-| SonarQube – backend (Go services) | SonarQube – frontend (React) |
+| SonarQube – backend (Go services): quality gate passed, **84.9% coverage** and 0% duplication on new code | SonarQube – frontend (React) |
 |---|---|
 | ![SonarQube backend: quality gate passed](docs/screenshots/sonarqube-backend.png) | ![SonarQube frontend: quality gate passed](docs/screenshots/sonarqube-frontend.png) |
 
