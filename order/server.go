@@ -8,6 +8,7 @@ import (
 
 	account "github.com/ritesh-karankal/go-grpc-graphql-micro/account"
 	catalog "github.com/ritesh-karankal/go-grpc-graphql-micro/catalog"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/lifecycle"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/order/pb"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -23,7 +24,9 @@ type grpcServer struct {
 	catalogClient *catalog.Client
 }
 
-func ListenGRPC(s Service, accountURL, catalogURL string, port int) error {
+// ListenGRPC serves until ctx is cancelled, then drains in-flight RPCs. The account and
+// catalog clients are closed after draining, since in-flight RPCs may still use them.
+func ListenGRPC(ctx context.Context, s Service, accountURL, catalogURL string, port int) error {
 	accountClient, err := account.NewClient(accountURL)
 	if err != nil {
 		return err
@@ -52,7 +55,9 @@ func ListenGRPC(s Service, accountURL, catalogURL string, port int) error {
 
 	reflection.Register(serv)
 
-	return serv.Serve(lis)
+	defer accountClient.Close()
+	defer catalogClient.Close()
+	return lifecycle.ServeGRPC(ctx, serv, lis)
 }
 
 // gRPC status codes tell callers whose fault an error is: NotFound and InvalidArgument

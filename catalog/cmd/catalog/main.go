@@ -7,6 +7,7 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/catalog"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/lifecycle"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"github.com/tinrab/retry"
 )
@@ -22,11 +23,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	shutdown, err := telemetry.Init(context.Background(), "catalog-service")
+	// Cancelled on SIGTERM: the server then drains, and telemetry is flushed last
+	ctx, stop := lifecycle.SignalContext()
+	defer stop()
+
+	shutdown, err := telemetry.Init(ctx, "catalog-service")
 	if err != nil {
 		log.Fatal(err)
 	}
-	telemetry.ShutdownOnSignal(shutdown)
+	defer flush(shutdown)
 
 	var r catalog.Repository
 	retry.ForeverSleep(2*time.Second, func(_ int) (err error) {
@@ -39,7 +44,6 @@ func main() {
 
 	defer r.Close()
 
-	ctx := context.Background()
 	if err := r.Setup(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -50,6 +54,17 @@ func main() {
 	}
 
 	log.Println("Listening on port 8080...")
-	log.Fatal(catalog.ListenGRPC(s, 8080))
+	if err := catalog.ListenGRPC(ctx, s, 8080); err != nil {
+		log.Println(err)
+	}
+	log.Println("Stopped")
+}
 
+// flush sends buffered spans, metrics and logs before the process exits.
+func flush(shutdown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		log.Println("Failed to flush telemetry:", err)
+	}
 }

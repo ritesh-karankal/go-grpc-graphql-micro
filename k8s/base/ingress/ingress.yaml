@@ -8,6 +8,8 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # Default is 300s. Pods drain within ~25s (preStop + lifecycle.DrainTimeout)
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
 spec:
   ingressClassName: alb
   rules:

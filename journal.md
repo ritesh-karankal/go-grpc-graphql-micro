@@ -17,10 +17,10 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
-| [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Open |
+| [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Fix ready |
 | [INC-019](#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested) | 2026-10-09 | SigNoz / capacity | SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested | Medium | Fix ready |
 | [INC-018](#inc-018--kubectl-top-fails-metrics-api-not-available) | 2026-10-09 | Kubernetes / EKS add-ons | `kubectl top` fails: `Metrics API not available` | Low | Fix ready |
-| [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Open |
+| [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Fix ready |
 | [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
 | [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Resolved |
 | [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
@@ -116,7 +116,7 @@ Docs, source files or issues used to confirm the cause.
 | **Date** | 2026-10-09 |
 | **Where** | gRPC clients (`account/client.go`, `catalog/client.go`, `order/client.go`) and the ClusterIP Services `account-service`, `catalog-service`, `order-service` |
 | **Severity** | Medium: the second replica of each gRPC service adds failover but little or no capacity |
-| **Status** | Open: fix proposed (headless Services + `round_robin`) |
+| **Status** | Fix ready: headless Services + `round_robin` clients; waiting for build + deploy |
 
 ### Summary
 During a 110-user load test, `kubectl top pods` showed one `order-service` pod at **55m CPU** and the other at **1m**: idle for the whole test. `catalog-service` was uneven too (82m vs 37m). gRPC sends all requests from one client over **one long-lived HTTP/2 connection**, and a Kubernetes ClusterIP Service balances **connections, not requests**. Each client therefore sticks to whichever pod it reached first.
@@ -160,7 +160,14 @@ The standard Kubernetes Service, used with gRPC clients on default settings.
 4. **Verify:** re-run the load test → both replicas of each service show similar CPU and span counts.
 
 ### Code / config change
-Pending.
+- `account/client.go`, `catalog/client.go`, `order/client.go`:
+  ```go
+  grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
+  ```
+- New Services `account-service-headless`, `catalog-service-headless`, `order-service-headless` (`clusterIP: None`, same selector and port), next to the existing ClusterIP Services.
+- Gateway and order-service env: `*_SERVICE_URL` → `<name>-headless:8080`.
+- Why **new** Services rather than changing the existing ones: `clusterIP` is immutable. Switching a Service to headless means delete + recreate, a window in which the name doesn't resolve. Adding new Services and moving clients over avoids it (expand → migrate → contract). The old ClusterIP Services can be removed once nothing uses them.
+- The `PostOrder` tests now run through `round_robin` clients against real gRPC servers and still pass.
 
 ### Lessons learned
 - Kubernetes Services load-balance **connections**. For long-lived protocols (gRPC, WebSockets, database pools) that is not request balancing.
@@ -385,7 +392,7 @@ resource "aws_eks_addon" "metrics_server" {
 | **Date** | 2026-10-09 |
 | **Where** | `telemetry/telemetry.go` › `ShutdownOnSignal`; the four Go services' `main`; Deployments in `k8s/base/` (no `preStop`, no grace period); ALB target group |
 | **Severity** | Medium: some requests fail on **every deploy**, which burns the SLO error budget each time Jenkins ships |
-| **Status** | Open: cause identified; fix (graceful shutdown + `preStop` + ALB readiness) proposed |
+| **Status** | Fix ready: graceful shutdown (`lifecycle` package), `preStop` + grace period, ALB readiness gates and deregistration delay; tested locally, waiting for build + deploy |
 
 ### Summary
 During a load test, a few requests failed with `ConnectionResetError: [Errno 104] Connection reset by peer`. The run overlapped with Argo CD rolling out backend version 6. When Kubernetes replaces a pod, it sends `SIGTERM` while it is still removing the pod from the Service and the ALB. Our shutdown handler (`telemetry.ShutdownOnSignal`) flushes telemetry and calls `os.Exit(0)` straight away, without finishing in-flight requests or waiting for traffic to stop. Requests in that window were cut off. The same run also exposed a bug in the load generator: an unhandled reset crashed the simulated user's thread.
@@ -436,8 +443,19 @@ Proposed (to implement):
 5. **Verify:** run the load generator, trigger `kubectl -n go-micro-shop rollout restart deploy`, and expect **0 network errors** and no `server_error` spike in SigNoz.
 
 ### Code / config change
-- Done: `scripts/loadgen.py` (exception handling and reporting).
-- Pending: `telemetry/telemetry.go`, the services' `main` / `ListenGRPC`, `k8s/base/*` Deployments, `k8s/base/ingress/ingress.yaml`, namespace label.
+- `scripts/loadgen.py`: exception handling and reporting.
+- **New package `lifecycle`:** `SignalContext()` (cancelled on SIGTERM / Ctrl+C), `ServeGRPC(ctx, server, listener)` (`GracefulStop`, forced `Stop` after `DrainTimeout` = 10 s), `ServeHTTP(ctx, server)` (`Shutdown` with the same timeout).
+- **The four `main` functions:** signal context → serve until cancelled → drain → `flush(shutdown)` (telemetry, 5 s timeout) → exit. `telemetry.ShutdownOnSignal` (flush, then `os.Exit(0)`) removed.
+- **Gateway:** its own `http.Server` (with `ReadHeaderTimeout: 10s`) instead of the global `http.ListenAndServe`.
+- **order-service:** closes its account and catalog clients *after* draining, because in-flight RPCs still use them.
+- **Dockerfiles** (catalog, order, graphql): `COPY lifecycle`.
+- **Deployments** (account, catalog, order, gateway): `terminationGracePeriodSeconds: 30` and `lifecycle.preStop.sleep.seconds: 15`. Budget: 15 s preStop + ≤10 s drain + ≤5 s flush = 30 s.
+- **Namespace:** label `elbv2.k8s.aws/pod-readiness-gate-inject: enabled`.
+- **Ingress:** `alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30` (default 300).
+
+Tests (`lifecycle/lifecycle_test.go`): a request (HTTP) and an RPC (gRPC) still running when shutdown starts must complete. **Checked against the old behaviour:** with a hard stop instead of draining, both fail (`EOF`, `Unavailable … EOF`); with draining both pass. The real gateway binary, sent SIGTERM, logs `Stopped` and exits within ~200 ms when idle.
+
+Note for the first deploy of this fix: pods being replaced still run the **old** code and the old pod spec (no `preStop`), so that one rollout can still reset a few requests. From the next rollout on, the fix applies.
 
 ### Lessons learned
 - `os.Exit` in a signal handler is almost never right for a server: it skips draining.

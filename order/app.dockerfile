@@ -11,6 +11,7 @@ COPY account ./account
 COPY catalog ./catalog
 COPY order ./order
 COPY telemetry ./telemetry
+COPY lifecycle ./lifecycle
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app/app \

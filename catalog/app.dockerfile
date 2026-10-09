@@ -8,6 +8,7 @@ WORKDIR /app
 COPY go.mod go.sum ./
 COPY catalog ./catalog
 COPY telemetry ./telemetry
+COPY lifecycle ./lifecycle
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app/app \

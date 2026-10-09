@@ -19,10 +19,19 @@ spec:
         prometheus.io/port: "9464"
         prometheus.io/path: /metrics
     spec:
+      # preStop sleep (15s) + draining in-flight requests (up to 10s, lifecycle.DrainTimeout)
+      # + flushing telemetry (up to 5s) must fit in here
+      terminationGracePeriodSeconds: 30
       containers:
         - name: account-service
           image: account
           imagePullPolicy: IfNotPresent
+          # Keep serving while the load balancer and Service endpoints stop routing here;
+          # SIGTERM (and draining) only starts after this
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 15
           ports:
             - containerPort: 8080
               name: grpc
@@ -97,3 +106,20 @@ spec:
   selector:
     app: account-service
   type: ClusterIP
+
+---
+# Headless twin of account-service: DNS returns every pod IP instead of one virtual IP, so gRPC
+# clients (round_robin) spread requests over all replicas. A ClusterIP Service balances
+# connections, and gRPC keeps one connection open, so it pinned each client to one pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-service-headless
+spec:
+  clusterIP: None
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: grpc
+  selector:
+    app: account-service

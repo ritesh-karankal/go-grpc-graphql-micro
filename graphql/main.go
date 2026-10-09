@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
@@ -11,6 +12,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/ravilushqa/otelgqlgen"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/lifecycle"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -29,11 +31,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	shutdown, err := telemetry.Init(context.Background(), "graphql-gateway")
+	// Cancelled on SIGTERM: the server then drains, and telemetry is flushed last
+	ctx, stop := lifecycle.SignalContext()
+	defer stop()
+
+	shutdown, err := telemetry.Init(ctx, "graphql-gateway")
 	if err != nil {
 		log.Fatal(err)
 	}
-	telemetry.ShutdownOnSignal(shutdown)
+	defer flush(shutdown)
 
 	s, err := NewGraphQLServer(cfg.AccountURL, cfg.CatalogURL, cfg.OrderURL)
 	if err != nil {
@@ -63,10 +69,24 @@ func main() {
 	}
 	graphqlServer.Use(opMetrics)
 
-	http.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(syntheticMiddleware(graphqlServer)), "graphql"))
-	http.Handle("/playground", corsMiddleware(playground.Handler("ritesh", "/graphql")))
+	mux := http.NewServeMux()
+	mux.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(syntheticMiddleware(graphqlServer)), "graphql"))
+	mux.Handle("/playground", corsMiddleware(playground.Handler("ritesh", "/graphql")))
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	if err := lifecycle.ServeHTTP(ctx, srv); err != nil {
+		log.Println(err)
+	}
+	log.Println("Stopped")
+}
+
+// flush sends buffered spans, metrics and logs before the process exits.
+func flush(shutdown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		log.Println("Failed to flush telemetry:", err)
+	}
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

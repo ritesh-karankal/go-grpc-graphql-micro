@@ -2,3 +2,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: go-micro-shop
+  labels:
+    # AWS Load Balancer Controller injects readiness gates into pods behind the ALB, so a
+    # rollout waits until the ALB has registered the new pods before removing old ones
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled

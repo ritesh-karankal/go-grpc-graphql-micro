@@ -17,8 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -175,22 +173,4 @@ func serveMetrics(registry *prometheus.Registry) (*http.Server, error) {
 	slog.Info("Serving Prometheus metrics", "addr", addr, "path", "/metrics")
 
 	return srv, nil
-}
-
-// ShutdownOnSignal flushes buffered telemetry when the pod is stopped (SIGTERM)
-// or the process is interrupted, then exits. Without it the last spans are lost,
-// because the servers block until they are killed.
-func ShutdownOnSignal(shutdown func(context.Context) error) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, os.Interrupt)
-
-	go func() {
-		<-ch
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := shutdown(ctx); err != nil {
-			slog.Error("Failed to flush telemetry", "err", err)
-		}
-		os.Exit(0)
-	}()
 }

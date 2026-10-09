@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/account/pb"
+	"github.com/ritesh-karankal/go-grpc-graphql-micro/lifecycle"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -22,7 +23,8 @@ type grpcServer struct {
 	service Service
 }
 
-func ListenGRPC(s Service, port int) error {
+// ListenGRPC serves until ctx is cancelled, then drains in-flight RPCs.
+func ListenGRPC(ctx context.Context, s Service, port int) error {
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return err
@@ -31,7 +33,7 @@ func ListenGRPC(s Service, port int) error {
 	serv := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	pb.RegisterAccountServiceServer(serv, &grpcServer{service: s})
 	reflection.Register(serv)
-	return  serv.Serve(lis)
+	return lifecycle.ServeGRPC(ctx, serv, lis)
 }
 
 // gRPC status codes tell callers whose fault an error is: NotFound and InvalidArgument

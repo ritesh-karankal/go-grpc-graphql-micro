@@ -19,10 +19,19 @@ spec:
         prometheus.io/port: "9464"
         prometheus.io/path: /metrics
     spec:
+      # preStop sleep (15s) + draining in-flight requests (up to 10s, lifecycle.DrainTimeout)
+      # + flushing telemetry (up to 5s) must fit in here
+      terminationGracePeriodSeconds: 30
       containers:
         - name: order-service
           image: order
           imagePullPolicy: IfNotPresent
+          # Keep serving while the load balancer and Service endpoints stop routing here;
+          # SIGTERM (and draining) only starts after this
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 15
           ports:
             - containerPort: 8080
               name: grpc
@@ -51,9 +60,9 @@ spec:
             - name: DATABASE_URL
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@order-db-service:5432/$(POSTGRES_DB)?sslmode=disable"
             - name: ACCOUNT_SERVICE_URL
-              value: "account-service:8080"
+              value: "account-service-headless:8080"
             - name: CATALOG_SERVICE_URL
-              value: "catalog-service:8080"
+              value: "catalog-service-headless:8080"
             # Tag every span, metric and log with where it came from. SigNoz filters and
             # groups by deployment.environment (not the newer deployment.environment.name)
             - name: K8S_POD_NAME
@@ -101,3 +110,20 @@ spec:
   selector:
     app: order-service
   type: ClusterIP
+
+---
+# Headless twin of order-service: DNS returns every pod IP instead of one virtual IP, so gRPC
+# clients (round_robin) spread requests over all replicas. A ClusterIP Service balances
+# connections, and gRPC keeps one connection open, so it pinned each client to one pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service-headless
+spec:
+  clusterIP: None
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: grpc
+  selector:
+    app: order-service

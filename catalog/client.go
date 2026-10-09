@@ -20,6 +20,9 @@ func NewClient(url string) (*Client, error) {
 		"dns:///"+url,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		// Spread RPCs over every pod: with a headless Service, DNS returns all pod IPs and
+		// round_robin keeps a connection to each (the default pick_first uses just one).
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"round_robin":{}}]}`),
 	)
 	if err != nil {
 		return nil, err
