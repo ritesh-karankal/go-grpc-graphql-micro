@@ -193,6 +193,10 @@ func (r *elasticRepository) ListProductsWithIDs(ctx context.Context, ids []strin
 
 	products := []Product{}
 	for _, doc := range res.Docs {
+		// Unknown IDs come back with Found=false and no _source; skip them
+		if !doc.Found || doc.Source == nil {
+			continue
+		}
 		p := productDocument{}
 		if err = json.Unmarshal(*doc.Source, &p); err == nil {
 			products = append(products, Product{

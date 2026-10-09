@@ -13,6 +13,7 @@ import (
 	"github.com/ravilushqa/otelgqlgen"
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/telemetry"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
 )
 
 type AppConfig struct {
@@ -53,6 +54,14 @@ func main() {
 			return fc.IsResolver
 		}),
 	))
+
+	// Per-operation count and latency with an ok / client_error / server_error outcome:
+	// the SLIs. HTTP metrics can't provide them, since GraphQL errors still return 200.
+	opMetrics, err := newOperationMetrics(otel.GetMeterProvider())
+	if err != nil {
+		log.Fatal(err)
+	}
+	graphqlServer.Use(opMetrics)
 
 	http.Handle("/graphql", otelhttp.NewHandler(corsMiddleware(graphqlServer), "graphql"))
 	http.Handle("/playground", corsMiddleware(playground.Handler("ritesh", "/graphql")))

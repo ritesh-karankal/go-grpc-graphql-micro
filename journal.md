@@ -17,7 +17,9 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
-| [INC-012](#inc-012--signoz-ui-not-reachable-load-balancer-created-as-internal) | 2026-10-09 | SigNoz / AWS LB Controller | SigNoz UI not reachable: load balancer created as `internal` | Medium | Fix applied |
+| [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
+| [INC-013](#inc-013--signoz-shows-youre-not-sending-any-data-yet) | 2026-10-09 | SigNoz / OpenTelemetry | SigNoz shows "You're not sending any data yet" | Medium | Resolved |
+| [INC-012](#inc-012--signoz-ui-not-reachable-load-balancer-created-as-internal) | 2026-10-09 | SigNoz / AWS LB Controller | SigNoz UI not reachable: load balancer created as `internal` | Medium | Resolved |
 | [INC-011](#inc-011--update-deployment-file-fails-nothing-added-to-commit) | 2026-10-08 | Jenkins / GitOps | `Update Deployment file` fails: "nothing added to commit" | Low | Resolved |
 | [INC-010](#inc-010--backend-pipeline-aborted-after-60-minutes-in-owasp-dependency-check) | 2026-10-08 | Jenkins / OWASP | `backend` pipeline aborted after 60 minutes in OWASP Dependency-Check | Medium | Resolved |
 | [INC-009](#inc-009--argo-cd-ui-not-reachable-in-the-browser) | 2026-10-08 | Argo CD / Browser | Argo CD UI "not reachable" in the browser | Low | Resolved |
@@ -101,6 +103,246 @@ Docs, source files or issues used to confirm the cause.
 
 ---
 
+## INC-014 – catalog-service would crash on an order with an unknown product ID
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | `catalog/repository.go` › `ListProductsWithIDs` (called by order-service for every checkout and order-history view) |
+| **Severity** | High: one request with a bad product ID would crash a catalog-service pod; the shop's browse, search and checkout all depend on it. Caught before it happened |
+| **Status** | Resolved (fix + regression test) |
+
+### Summary
+While adding gRPC status codes for SLOs, a review of catalog-service found that `ListProductsWithIDs` dereferenced each Elasticsearch document's `_source` without checking whether the document exists. For an unknown product ID, Elasticsearch returns `found: false` and **no `_source`**, so the code would hit a **nil pointer dereference**. In a gRPC handler that is an unrecovered panic, and the whole catalog-service process exits. A regression test reproduces the panic on the old code, and the fix (skip documents that weren't found) makes it pass.
+
+### Background
+- order-service calls catalog's `GetProducts(ids...)` when placing an order and when showing order history. Catalog answers with an Elasticsearch **multi-get** (`_mget`): one entry per requested ID.
+- For an ID that doesn't exist, `_mget` still returns an entry, with `"found": false` and **no `_source` field**. In elastic.v5 that is `doc.Found == false` and `doc.Source == nil` (a `*json.RawMessage`).
+- `json.Unmarshal(*doc.Source, ...)` dereferences that pointer. With `nil` it panics.
+- **grpc-go does not recover panics in handlers.** A panic in a request handler crashes the process. Kubernetes restarts the pod, but in-flight requests on it fail, and repeated bad requests can crash-loop both replicas.
+
+### Timeline
+1. Adding SLI support: services must return proper gRPC codes (`NotFound` vs `Internal`), so every error path in account, catalog and order was reviewed.
+2. In `catalog/repository.go`, `ListProductsWithIDs` looped over `res.Docs` and called `json.Unmarshal(*doc.Source, &p)` for every document, found or not.
+3. Checked elastic.v5's `GetResult`: `Source *json.RawMessage` and `Found bool`. Missing documents leave `Source` nil.
+4. Why it hadn't happened yet: the load test's bad orders used an unknown *account*, so order-service stopped before calling catalog. The frontend only sends IDs of products it has just listed.
+5. Wrote a test with a fake Elasticsearch (`httptest`) returning one found and one missing document. On the **old** code it panicked; with the fix it passes.
+
+### What happened (symptom)
+No production occurrence. Reproduced by the regression test against the old code:
+
+    --- FAIL: TestListProductsWithIDsSkipsMissing (0.00s)
+    panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+
+In the cluster this would have shown as: a catalog-service pod restarting (`RESTARTS` going up), the triggering checkout failing, and in SigNoz a broken trace ending in catalog with no response.
+
+### How we got there
+The original code assumed every requested ID exists. Nothing validated product IDs before the multi-get, so any client (or a stale cart holding a deleted product) could send an unknown ID.
+
+### Why (root cause)
+1. Elasticsearch represents "not found" in a multi-get as an entry with `found: false` and no `_source`, not as an error.
+2. The loop didn't check `doc.Found` or `doc.Source != nil` before dereferencing.
+3. gRPC servers in Go don't recover handler panics, so one bad document crashes the whole service.
+
+### Impact
+- None in practice (found in review).
+- Potential: a single crafted `createOrder` (or an order history containing a since-deleted product) would crash a catalog pod. Repeated, it could take down browse, search and checkout for everyone, which is a denial-of-service via one bad input.
+
+### Resolution (step by step)
+1. **Fix:** skip documents that weren't found:
+   ```go
+   if !doc.Found || doc.Source == nil {
+       continue
+   }
+   ```
+2. **Regression test** (`catalog/server_test.go`, `TestListProductsWithIDsSkipsMissing`): a fake Elasticsearch returns one found and one missing document; the test expects only the found product, and no panic.
+3. **Prove the test catches the bug:** restore the old `repository.go`, run the test → panic; restore the fix → pass.
+4. **Handle the effect upstream:** order-service now rejects an order whose products all don't exist with `InvalidArgument` ("none of the ordered products exist"), instead of storing an empty $0 order.
+5. **Verify after deploy** (laptop):
+   ```bash
+   curl -s -X POST -H 'Content-Type: application/json' http://<ALB_HOST>/graphql -d \
+     '{"query":"mutation{createOrder(order:{accountId:\"<real account id>\",products:[{id:\"does-not-exist\",quantity:1}]}){id}}"}'
+   # expect an error "none of the ordered products exist"; catalog pods' RESTARTS unchanged
+   ```
+
+### Code / config change
+```diff
+ 	for _, doc := range res.Docs {
++		// Unknown IDs come back with Found=false and no _source; skip them
++		if !doc.Found || doc.Source == nil {
++			continue
++		}
+ 		p := productDocument{}
+ 		if err = json.Unmarshal(*doc.Source, &p); err == nil {
+```
+Plus `order/server.go`: an order with no existing products → `codes.InvalidArgument`.
+
+### Lessons learned
+- Check every pointer that comes from external data before dereferencing it, especially "optional" fields in API responses.
+- In Go gRPC services, a panic is an outage, not just an error. Consider a recovery interceptor (`grpc-ecosystem/go-grpc-middleware/recovery`) as defence in depth.
+- Reviewing error paths for one purpose (SLOs) surfaces bugs in others. Error handling is where latent bugs hide.
+- A regression test should be shown to **fail on the old code**; otherwise it may not test anything.
+
+### How to approach it next time
+1. Pod `RESTARTS` increasing → `kubectl logs <pod> --previous` shows the panic and stack trace of the crashed container.
+2. Find the request that triggered it: SigNoz traces with errors around the crash time, ending in the crashed service.
+3. Reproduce with a unit test using a fake dependency (`httptest` for HTTP APIs such as Elasticsearch).
+
+### Prevention / follow-up
+- Done: fix + regression test.
+- Follow-up: add a gRPC **recovery interceptor** to all three services, so an unexpected panic becomes an `Internal` error instead of a crash.
+- Follow-up: validate input at the gateway (product IDs format, quantities), as already done for quantity.
+
+### References
+- Elasticsearch: [Multi get API — response for missing documents](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/docs-multi-get.html).
+- grpc-go: panics in handlers are not recovered; see [go-grpc-middleware recovery](https://github.com/grpc-ecosystem/go-grpc-middleware/tree/main/interceptors/recovery).
+
+---
+
+## INC-013 – SigNoz shows "You're not sending any data yet"
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | SigNoz UI (first login); the services' OTLP exporters (`telemetry/telemetry.go`) → `signoz-otel-collector.signoz.svc.cluster.local:4317`; Recreate guide Steps 14 and 16 |
+| **Severity** | Medium: no traces, metrics or logs reached SigNoz for a while; the app itself was unaffected |
+| **Status** | Resolved: exporters recovered, pods restarted, SigNoz receiving data |
+
+### Summary
+After SigNoz was installed, its UI said "You're not sending any data yet". Every part of the setup checked out (new images, correct environment variables, collector reachable, SigNoz healthy), except the **timing**. The app pods had started at 18:30, **a few minutes before SigNoz was installed**. At that moment the collector's DNS name did not exist yet, so the OpenTelemetry exporters failed with `name resolver error: produced zero addresses`, every 10 seconds. gRPC kept re-resolving the name, and by the time we checked the exporters had already stopped failing. The pods were restarted anyway, so every pod started with the collector already in DNS, and SigNoz then showed data.
+
+### Background
+- Each Go service sends traces, metrics and logs over **OTLP/gRPC** to the SigNoz collector at `signoz-otel-collector.signoz.svc.cluster.local:4317` (from the `otel-config` ConfigMap).
+- `<service>.<namespace>.svc.cluster.local` names are answered by the cluster's DNS (CoreDNS) **only while that Service exists**. Before `helm install signoz`, the name doesn't resolve.
+- The OTel exporters use a gRPC client that connects **lazily** and keeps retrying. If DNS returns nothing, gRPC reports `name resolver error: produced zero addresses`, then re-resolves with exponential backoff. The app keeps running normally while this happens; only telemetry export fails (by design, see `telemetry/telemetry.go`).
+- Even with no user traffic, every service pushes Go runtime metrics every 60 seconds. So "no data at all" means nothing reaches the collector, not just "nobody clicked yet".
+- SigNoz shows its onboarding message ("not sending any data yet") until the first data arrives.
+
+### Timeline
+1. **18:30:49 UTC:** app pods started (Argo CD sync, Step 14). SigNoz not installed yet.
+2. **18:31:00 onwards:** pod logs show `exporter export timeout: rpc error: code = Unavailable desc = name resolver error: produced zero addresses` every 10 s.
+3. **~18:33:** SigNoz installed with Helm (Step 16). Collector Service and pods came up.
+4. Later (after INC-012): first login to the SigNoz UI showed "You're not sending any data yet".
+5. Ran a 4-part check on the bastion: images, environment, network path, SigNoz health (results below). Only the startup log showed a problem.
+6. Counted export errors in the last 2 minutes: **0**. The exporters had already recovered on their own.
+7. Restarted all app deployments anyway (`kubectl rollout restart`), then counted again: **0** errors.
+8. Generated traffic in the shop and refreshed SigNoz: data showed up, services listed.
+9. **Second phase, seen in SigNoz's own Logs view:** a burst of a *different* error between **18:48:52 and 18:50:46 UTC** (00:18–00:20 IST in the UI):
+   `dial tcp <collector ClusterIP>:4317: connect: connection refused`. The collector's own log showed `Starting health_check extension` at **18:48:41 UTC**, 11 s before the burst.
+10. SigNoz Logs, *Last 15 minutes*: last error at 18:50:46 UTC; afterwards only normal lines (e.g. `Listening on port 8080...` from the restarted pods at 18:53:07). The burst stopped on its own about 2 minutes before the restart.
+
+### What happened (symptom)
+SigNoz UI:
+
+    You're not sending any data yet.
+    SigNoz is so much better with your data ⎯ start by sending your telemetry data to SigNoz.
+
+Pod log (`kubectl -n go-micro-shop logs deploy/order-service`):
+
+    2026/10/08 18:30:49 INFO Serving Prometheus metrics addr=:9464 path=/metrics
+    time=2026-10-08T18:31:00.823Z level=INFO msg="exporter export timeout: rpc error: code = Unavailable desc = name resolver error: produced zero addresses"
+    time=2026-10-08T18:31:10.823Z level=INFO msg="exporter export timeout: rpc error: code = Unavailable desc = name resolver error: produced zero addresses"
+    ...
+
+### How we got there
+The guide installs SigNoz (Step 16) **after** deploying the app (Step 14), so the app always starts before the collector exists.
+
+### Why (root cause)
+1. Argo CD deployed the app before SigNoz existed (install order).
+2. The pods' exporters looked up `signoz-otel-collector.signoz.svc.cluster.local` at startup. The Service didn't exist, so DNS returned **no addresses**.
+3. Every export attempt failed with `name resolver error: produced zero addresses`, so nothing reached SigNoz, and the UI showed its "no data" message.
+4. Once SigNoz was installed, gRPC's re-resolution eventually found the new name and exports started succeeding (0 errors in the 2 minutes before the restart).
+
+*Not fully confirmed:* whether this self-recovery alone would have filled the UI, or whether the restart was also needed. The restart was done before SigNoz was re-checked. Either way, the cause was the pods starting before the collector's DNS name existed.
+
+**Second phase, `connection refused` (18:48:52–18:50:46 UTC).** A different failure from the DNS one:
+
+| Error | What it means |
+|---|---|
+| `name resolver error: produced zero addresses` | the collector's **name** does not exist (Service not created yet) |
+| `connect: connection refused` to the collector's ClusterIP | the name resolves to the Service, but **no ready collector pod** is behind it, so kube-proxy rejects the connection |
+
+5. At 18:48:41 UTC the collector logged `Starting health_check extension`, i.e. it was (re)starting its pipelines. Its pod showed `RESTARTS 0`, so this was an **in-process restart**, not a container restart.
+6. While restarting, the collector was not ready and port 4317 was not served, hence about 2 minutes of `connection refused`.
+7. *Inferred, not confirmed:* SigNoz manages its collector remotely over **OpAMP** and pushes config updates to it (for example around the first login / initial setup), and the collector restarts its pipelines to apply them. The timing fits; the collector log around 18:48 UTC would confirm it.
+8. It recovered on its own at 18:50:46 UTC. The log records written during the outage were buffered by the SDK and delivered afterwards, which is why they appeared in SigNoz itself.
+
+Everything else was ruled out by the checks:
+
+| # | Possible cause | Check (bastion) | Result |
+|---|---|---|---|
+| 1 | Old images without OpenTelemetry | `kubectl -n go-micro-shop get deploy -o custom-columns=...IMAGE...` | `account/catalog/order/graphql:3` (current) |
+| 1b | Instrumentation not running | `kubectl exec deploy/order-service -- wget -qO- localhost:9464/metrics` | `go_goroutine_count`, `rpc_client_call_duration_seconds…` present |
+| 2 | Endpoint variable missing | `kubectl exec deploy/order-service -- env \| grep OTEL` | endpoint set; `deployment.environment=dev`, pod and node names |
+| 3 | Network path blocked | `kubectl exec deploy/order-service -- nc -zv -w 5 signoz-otel-collector.signoz.svc.cluster.local 4317` | `open` (172.20.x.x:4317) |
+| 4 | SigNoz not ready | `kubectl -n signoz get pods` | collector, ClickHouse, ZooKeeper, query service Running; migrator Completed |
+| 2b | **Exporter errors** | `kubectl logs deploy/order-service \| grep -iE "otlp\|export"` | **`produced zero addresses` from 18:31** |
+
+### Impact
+- No telemetry in SigNoz from pod start until the exporters recovered. Nothing is buffered beyond the SDK's small in-memory queue, so data from that window is lost. It was setup time with no real users.
+- The app, Prometheus scraping (`:9464/metrics`) and Grafana were unaffected. Prometheus metrics are pulled, not pushed, so they don't depend on SigNoz.
+
+### Resolution (step by step)
+1. **Run the 4-part check** (table above) to find which link is broken, rather than guessing.
+2. **Read the exporter errors in the pod log:**
+   `produced zero addresses` = the name doesn't resolve (yet). Compare the pod start time (first log line) with the SigNoz pods' age (`kubectl -n signoz get pods`).
+3. **Check whether it is still failing**, not just whether it failed at startup:
+   ```bash
+   kubectl -n go-micro-shop logs deploy/order-service --since=2m | grep -c "exporter export timeout"
+   ```
+   Here: `0` → already recovered.
+4. **Restart the app** so all pods connect with the collector present:
+   ```bash
+   kubectl -n go-micro-shop rollout restart deploy
+   kubectl -n go-micro-shop rollout status deploy --timeout=5m
+   ```
+   Safe: 2 replicas per deployment, rolled one at a time; databases untouched.
+5. **Verify:** `--since=1m` error count `0`. Generate traffic, hard-refresh SigNoz → **Services** lists the four services in `dev`.
+
+**Phase 2 checks:**
+6. **Read the errors in SigNoz → Logs** with the time range set to *Last 15 minutes*. SigNoz shows local time (IST = UTC+5:30); convert to UTC before comparing with `kubectl` timestamps.
+7. **Find the last occurrence** of the error, and what comes after it. Here: last `connection refused` at 18:50:46 UTC, then only normal startup lines. The burst was over.
+8. **Correlate with the collector:**
+   ```bash
+   kubectl -n signoz get pods -l app.kubernetes.io/component=otel-collector          # RESTARTS
+   kubectl -n signoz logs deploy/signoz-otel-collector -c collector --since=2h \
+     | grep -iE '"msg":"(Starting|Shutdown|Everything is ready)' | tail
+   ```
+
+### Code / config change
+None.
+
+### Lessons learned
+- Logs that were **written** during an outage can still **arrive** afterwards (SDK buffering), so an error showing up in SigNoz now doesn't mean it is happening now. Always check the timestamp, and what comes after the last occurrence.
+- `zero addresses` and `connection refused` look alike but point at different layers: DNS/Service existence vs. pod readiness behind the Service.
+- A "no data" screen is a symptom of the **whole path**: app → env var → DNS → network → collector → storage. Checking each link in order finds the broken one in minutes.
+- `head` on logs only shows the past. To know whether something is failing **now**, use `--since=2m` (or `--tail`) and count.
+- Push-based telemetry depends on install order: if the receiver doesn't exist when the sender starts, the sender has to recover on its own. Pull-based (Prometheus) doesn't have this problem.
+
+### How to approach it next time
+1. Check that data is produced: `/metrics` on the pod.
+2. Check that the pod knows where to send: `env | grep OTEL`.
+3. Check that the pod can reach it: `nc -zv <collector> 4317`.
+4. Check that the receiver is healthy: `kubectl -n signoz get pods`.
+5. Read the exporter errors with `--since`:
+   - `produced zero addresses` → DNS: the collector Service is missing, or was created after the pod started;
+   - `connection refused` → Service exists but no ready collector pod (starting, restarting, or reloading config);
+   - `deadline exceeded` → network or collector overloaded;
+   - `Unimplemented` / `404` → wrong port or protocol (gRPC 4317 vs HTTP 4318).
+6. Confirm the collector is receiving: its own metrics on `:8888` (`otelcol_receiver_accepted_spans`, `..._metric_points`, `..._log_records`).
+
+### Prevention / follow-up
+- Install order: install SigNoz **before** creating the Argo CD Application, or restart the app right after installing SigNoz. The guide's Step 16 already says to restart if a service shows no data; moving SigNoz before Step 14 would avoid the issue.
+- Optional: lower the noise. The exporter logs a line every 10 s while it can't export; that is useful when debugging but noisy in normal logs.
+
+### References
+- OpenTelemetry Go: [OTLP gRPC exporter](https://pkg.go.dev/go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc) (lazy connection, retries).
+- gRPC: [Name resolution](https://grpc.io/docs/guides/custom-name-resolution/).
+- Kubernetes: [DNS for Services and Pods](https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/).
+- SigNoz: [Kubernetes install — send data to the collector](https://signoz.io/docs/install/kubernetes/others/).
+
+---
+
 ## INC-012 – SigNoz UI not reachable: load balancer created as `internal`
 
 | | |
@@ -108,7 +350,7 @@ Docs, source files or issues used to confirm the cause.
 | **Date** | 2026-10-09 |
 | **Where** | `k8s/monitoring/signoz-ui-service.yaml`; Recreate guide Step 16 (SigNoz) |
 | **Severity** | Medium: the SigNoz UI was unreachable from outside the VPC; SigNoz itself was running |
-| **Status** | Fix applied: Service recreated with the `internet-facing` annotation; waiting for confirmation that the UI opens |
+| **Status** | Resolved: Service recreated with the `internet-facing` annotation; new NLB active, targets healthy, UI returns HTTP 200 |
 
 ### Summary
 The Service that exposes the SigNoz UI got a load balancer, but its hostname did not resolve from the internet. AWS showed it as a **Network Load Balancer with scheme `internal`**: private IPs only, reachable from inside the VPC only. The Service manifest (written as part of the SigNoz setup) had no `aws-load-balancer-scheme: internet-facing` annotation. With the **AWS Load Balancer Controller** installed, a newly created `type: LoadBalancer` Service becomes an NLB, and NLBs default to `internal`. Fixed by adding the annotation and recreating the Service, since a load balancer's scheme cannot be changed in place.
@@ -131,7 +373,10 @@ The Service that exposes the SigNoz UI got a load balancer, but its hostname did
 3. The hostname `k8s-signoz-signozui-<hash>.elb.eu-north-1.amazonaws.com` did not open in the browser.
 4. From the laptop: DNS did not resolve (`curl` exit code 6). AWS showed `type: network`, `scheme: internal`, targets `initial`.
 5. Listed all load balancers: only the SigNoz one was an internal NLB; the other three were internet-facing Classic LBs, and the app's ALB was internet-facing.
-6. Added the annotation to the manifest and recreated the Service.
+6. Added the annotation to the manifest, pushed it, and recreated the Service on the bastion.
+7. Right after recreating it, `kubectl -n signoz get svc signoz-ui` returned `NotFound`: the delete had run, but the `sed ... | kubectl apply` line had not (lines merged when pasting). Re-ran the apply on its own.
+8. A **new** NLB appeared (different name/hash from the old one), scheme `internet-facing`. For the first ~1–2 minutes it was `provisioning`, targets `initial` (`Elb.RegistrationInProgress`), and DNS did not resolve yet.
+9. About 3 minutes after creation: state `active`, both targets `healthy`, `curl` → `200`. UI reachable.
 
 ### What happened (symptom)
 Browser: site not reachable. From the laptop:
@@ -193,6 +438,8 @@ The underlying gap: the manifest relied on a default, and the default depends on
    # internet-facing  active
    curl -s -o /dev/null -w '%{http_code}\n' http://<LB_HOST>/     # 200
    ```
+   Result here: `internet-facing`, `active`, targets `healthy`, HTTP `200`, about 3 minutes after the Service was created.
+5. **If `get svc` says `NotFound` after the delete**, the apply didn't run. Run it as its own command, check that `MY_IP` is set (an empty value gives the invalid CIDR `/32`), and look for `service/signoz-ui created`.
 
 ### Code / config change
 `k8s/monitoring/signoz-ui-service.yaml`:

@@ -2,7 +2,6 @@ package order
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"fmt"
 	"net"
@@ -12,7 +11,9 @@ import (
 	"github.com/ritesh-karankal/go-grpc-graphql-micro/order/pb"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 )
 
 type grpcServer struct {
@@ -54,11 +55,43 @@ func ListenGRPC(s Service, accountURL, catalogURL string, port int) error {
 	return serv.Serve(lis)
 }
 
+// gRPC status codes tell callers whose fault an error is: NotFound and InvalidArgument
+// are the client's (bad input), Unavailable and Internal are ours. The gateway's SLO
+// metrics rely on this.
+
+// fromUpstream turns an error from the account or catalog service into one for our
+// caller. The caller's mistakes keep their code, an unreachable dependency stays
+// Unavailable, and anything else becomes Internal.
+func fromUpstream(err error, clientMsg, serverMsg string) error {
+	switch code := status.Code(err); code {
+	case codes.NotFound, codes.InvalidArgument:
+		return status.Error(code, clientMsg)
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return status.Error(codes.Unavailable, serverMsg)
+	default:
+		return status.Error(codes.Internal, serverMsg)
+	}
+}
+
+// logUpstream logs the caller's mistakes as warnings and real failures as errors.
+func logUpstream(ctx context.Context, msg string, err error) {
+	switch status.Code(err) {
+	case codes.NotFound, codes.InvalidArgument:
+		slog.WarnContext(ctx, msg, "err", err)
+	default:
+		slog.ErrorContext(ctx, msg, "err", err)
+	}
+}
+
 func (s *grpcServer) PostOrder(ctx context.Context, r *pb.PostOrderRequest) (*pb.PostOrderResponse, error) {
+	if len(r.Products) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "order has no products")
+	}
+
 	_, err := s.accountClient.GetAccount(ctx, r.AccountId)
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get account", "err", err)
-		return nil, errors.New("account not found")
+		logUpstream(ctx, "Failed to get account", err)
+		return nil, fromUpstream(err, "account not found", "could not check account")
 	}
 
 
@@ -69,8 +102,8 @@ func (s *grpcServer) PostOrder(ctx context.Context, r *pb.PostOrderRequest) (*pb
 
 	orderedProducts, err := s.catalogClient.GetProducts(ctx, 0, 0, productIDs, "")
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get products", "err", err)
-		return nil, errors.New("products not found")
+		logUpstream(ctx, "Failed to get products", err)
+		return nil, fromUpstream(err, "products not found", "could not load products")
 	}
 
 	products := []OrderedProduct{}
@@ -95,10 +128,16 @@ func (s *grpcServer) PostOrder(ctx context.Context, r *pb.PostOrderRequest) (*pb
 		}
 	}
 
+	// Unknown product IDs are dropped above; an order with none left is the caller's mistake
+	if len(products) == 0 {
+		slog.WarnContext(ctx, "Order has no existing products", "requested", len(r.Products))
+		return nil, status.Error(codes.InvalidArgument, "none of the ordered products exist")
+	}
+
 	order, err := s.service.PostOrder(ctx, r.AccountId, products)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to post order", "err", err)
-		return nil, errors.New("could not post order")
+		return nil, status.Error(codes.Internal, "could not post order")
 	}
 
 	orderProto := &pb.Order{
@@ -128,7 +167,7 @@ func (s *grpcServer) GetOrdersForAccount(ctx context.Context, r *pb.GetOrdersFor
 	accountOrders, err := s.service.GetOrdersForAccount(ctx, r.AccountId)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get orders for account", "err", err)
-		return nil, err
+		return nil, status.Error(codes.Internal, "could not get orders")
 	}
 
 	productIDMap := map[string]bool{}
@@ -145,8 +184,8 @@ func (s *grpcServer) GetOrdersForAccount(ctx context.Context, r *pb.GetOrdersFor
 
 	products, err := s.catalogClient.GetProducts(ctx, 0, 0, productIDs, "")
 	if err != nil {
-		slog.ErrorContext(ctx, "Failed to get products for account orders", "err", err)
-		return nil, err
+		logUpstream(ctx, "Failed to get products for account orders", err)
+		return nil, fromUpstream(err, "products not found", "could not load products for orders")
 	}
 
 	orders := []*pb.Order{}
