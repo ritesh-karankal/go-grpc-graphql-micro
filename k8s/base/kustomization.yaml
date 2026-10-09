@@ -30,12 +30,12 @@ configMapGenerator:
 
 images:
   - name: account
-    newTag: "5"
+    newTag: "6"
   - name: catalog
-    newTag: "5"
+    newTag: "6"
   - name: order
-    newTag: "5"
+    newTag: "6"
   - name: graphql
-    newTag: "5"
+    newTag: "6"
   - name: frontend
     newTag: "2"
