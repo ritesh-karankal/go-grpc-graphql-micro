@@ -17,6 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-023](#inc-023--fault-drill-order-service-keeps-working-11-s-after-the-gateway-gave-up-at-3-s) | 2026-10-09 | order-service / Postgres | Fault drill: order-service keeps working 11 s after the gateway gave up at 3 s | Medium | Open |
 | [INC-022](#inc-022--clickhouse-busy-logging-itself-internal-system-logs-outweigh-real-telemetry-20x) | 2026-10-09 | SigNoz / ClickHouse | ClickHouse busy logging itself: internal system logs outweigh real telemetry ~20x | Medium | Fix ready |
 | [INC-021](#inc-021--quality-gate-error-again-go-only-credits-coverage-to-the-package-under-test) | 2026-10-09 | Jenkins / SonarQube | Quality gate `ERROR` again: Go only credits coverage to the package under test | Medium | Resolved |
 | [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Deployed, verifying |
@@ -108,6 +109,74 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-023 – Fault drill: order-service keeps working 11 s after the gateway gave up at 3 s
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | SLO fault drill (`order-db` scaled to 0); trace of a failed `CreateOrder`; `order-service` → Postgres |
+| **Severity** | Medium: during a database outage, order-service does work nobody waits for, which can pile up connections/goroutines and slow recovery |
+| **Status** | Open: observed in a trace; cause of the 11 s still being confirmed |
+
+### Summary
+During the planned SLO fault drill (orders database taken down on purpose), a failing checkout's trace showed the gateway giving up after **3.00 s** (its timeout) while **order-service's `PostOrder` kept running for 11.33 s** before failing with `INTERNAL: could not post order`. gRPC passes the deadline to the server, so order-service *knew* the caller had given up, but something in the database path didn't stop.
+
+### Background
+- The gateway calls order-service with a **3-second timeout** (`context.WithTimeout` in the resolvers). gRPC sends that deadline to the server (`grpc-timeout` header), so the server's request context is cancelled at the same moment.
+- Code that respects the context stops when it's cancelled. Code that ignores it keeps running: **wasted work**, holding a goroutine and possibly a database connection.
+- During an outage, wasted work multiplies: every retrying user adds another stuck request, which is a classic way for a dependency failure to cascade.
+
+### Timeline
+1. Drill: `order-db` scaled to 0 (Argo CD self-heal paused first; see the drill notes in `docs/SLO.md`).
+2. 22:07:26 (UTC+5:30): outage confirmed: order history → `DeadlineExceeded` after 3.3 s.
+3. ≤ 22:15:07: checkout fast-burn alert (drill rule) **Firing**; the real-user rule stayed OK.
+4. 22:13:47: failed `CreateOrder` trace (`1d9cf9fb…`) inspected in SigNoz:
+
+   | Span | Service | Duration | Status |
+   |---|---|---|---|
+   | `POST /graphql` | gateway | 3.01 s | HTTP **200** |
+   | `CreateOrder` | gateway | 3.01 s | error |
+   | `pb.OrderService/PostOrder` (client) | gateway | **3.00 s** | error (deadline) |
+   | `pb.AccountService/GetAccount` | order → account | short | ok |
+   | `pb.OrderService/PostOrder` (server) | order-service | **11.33 s** | `INTERNAL`, "could not post order" |
+
+### What happened (symptom)
+The server span outlived its caller by ~8.3 s. (The same trace also shows HTTP 200 for a failed checkout, which is the reason the SLIs use the GraphQL `outcome` metric instead of HTTP status codes.)
+
+### Why (root cause)
+Evidence so far: order-service's error logs during the drill (`Failed to post order`, `exception.message: dial tcp <order-db>:5432: connect: connection refused`, `*net.OpError`) show each connection attempt failing **immediately** (refused, not timing out). An 11 s span made of instant failures points to **repeated attempts** inside one request rather than one long wait. The trace doesn't show child spans for these attempts (failed connects aren't traced by the current `otelsql` span options), so the exact loop is still *to be confirmed*. Hypotheses:
+- the Postgres **connection attempt** doesn't honour the cancelled context (driver or `otelsql` connector path), and runs until its own TCP/connect timeout;
+- or `database/sql` retries a bad connection (it does up to 2 retries on `driver.ErrBadConn`), each attempt waiting on a dead endpoint.
+
+### Impact
+- During the drill: extra latency only on the server side; users had already got an error after 3 s.
+- At real traffic: stuck goroutines and connections in order-service for every failed checkout, for the whole outage, and a slower recovery afterwards.
+
+### Resolution (step by step)
+1. Open the trace's waterfall under order-service `PostOrder`; identify the long child span and its error. *(pending)*
+2. Depending on the cause: set a connect timeout in the DSN (`connect_timeout=2`), bound DB calls with the request context (already passed: verify it reaches the connector), and/or configure `db.SetConnMaxLifetime` / `SetMaxOpenConns` so a dead database fails fast.
+3. Re-run the drill: the order-service span should end at about the same time as the gateway's (≈ 3 s).
+
+### Code / config change
+Pending.
+
+### Lessons learned
+- A fault drill tests more than the alert: the traces show how each service behaves *while* failing.
+- Every service in a call chain should stop when its caller stops. Timeouts are only half of it; honouring cancellation is the other half.
+
+### How to approach it next time
+1. In a failed trace, compare each server span's duration with its caller's timeout.
+2. A server span much longer than its client span means cancellation is ignored somewhere below it: follow the longest child span.
+
+### Prevention / follow-up
+- Add the drill (with this check) to the regular release checklist in `docs/SLO.md`.
+
+### References
+- Go: [`database/sql` — contexts and cancellation](https://go.dev/doc/database/cancel-operations).
+- gRPC: [Deadlines](https://grpc.io/docs/guides/deadlines/).
 
 ---
 

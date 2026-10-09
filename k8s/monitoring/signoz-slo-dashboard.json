@@ -1,0 +1,874 @@
+{
+  "spec": {
+    "display": {
+      "name": "SLOs : go-micro-shop",
+      "description": "SLIs, SLOs and error-budget burn for checkout and browse/search, from the gateway's OpenTelemetry metrics. See docs/SLO.md."
+    },
+    "variables": [
+      {
+        "kind": "ListVariable",
+        "spec": {
+          "display": {
+            "name": "synthetic",
+            "description": "false = real users (the SLO); true = load tests / drills"
+          },
+          "allowAllValue": false,
+          "allowMultiple": false,
+          "customAllValue": "",
+          "capturingRegexp": "",
+          "sort": "none",
+          "plugin": {
+            "kind": "signoz/CustomVariable",
+            "spec": {
+              "customValue": "true,false"
+            }
+          },
+          "name": "synthetic"
+        }
+      }
+    ],
+    "panels": {
+      "cd988334-f0e5-4d1a-8d87-78cf05afa7cd": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Checkout: availability SLI (target 99.5%)",
+            "description": "ok / (ok + server_error) over 5 minutes"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "percentunit",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": 0.95,
+                "softMax": 1,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "1 - ((sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=\"server_error\", synthetic=\"$synthetic\"}[5m])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "availability"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "571a8a46-971c-4706-9fb5-06d01bc51570": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Checkout: error-budget burn rate (page above 14.4)",
+            "description": "error ratio / 0.005. 1 = budget used up exactly over 28 days; page when both windows exceed 14.4"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "((sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=\"server_error\", synthetic=\"$synthetic\"}[1h])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[1h]))) / 0.005",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "burn 1h"
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "((sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=\"server_error\", synthetic=\"$synthetic\"}[5m])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"createOrder\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[5m]))) / 0.005",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "burn 5m"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "e2cba9aa-5893-4946-92d0-96d135b07d9d": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Checkout: latency SLI, share under 500 ms (target 99%)",
+            "description": ""
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "percentunit",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": 0.95,
+                "softMax": 1,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum(rate({\"graphql.server.operation.duration.bucket\", operation=\"createOrder\", outcome=\"ok\", synthetic=\"$synthetic\", le=\"0.5\"}[5m])) / sum(rate({\"graphql.server.operation.duration.count\", operation=\"createOrder\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m]))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "under 500 ms"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "22b67881-1615-4dc7-8bdb-781a3d37c714": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Checkout: latency p50 / p99",
+            "description": ""
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "s",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "histogram_quantile(0.99, sum by (le) (rate({\"graphql.server.operation.duration.bucket\", operation=\"createOrder\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "p99"
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "histogram_quantile(0.50, sum by (le) (rate({\"graphql.server.operation.duration.bucket\", operation=\"createOrder\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "p50"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "159b8771-8471-4841-ad4d-5b88563a7b95": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Checkout: traffic by outcome (requests/s)",
+            "description": "ok = good, server_error = bad (burns budget), client_error = caller's mistake (excluded)"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "reqps",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum by (outcome) (rate({\"graphql.server.operations\", operation=\"createOrder\", synthetic=\"$synthetic\"}[5m]))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "{{outcome}}"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "da6e6481-0421-4804-b625-afc9504bfb75": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Browse & search: availability SLI (target 99.9%)",
+            "description": "ok / (ok + server_error) over 5 minutes"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "percentunit",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": 0.95,
+                "softMax": 1,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "1 - ((sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=\"server_error\", synthetic=\"$synthetic\"}[5m])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "availability"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "f10fa74e-3844-4ab0-82bf-70adf9b6dc6e": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Browse & search: error-budget burn rate (page above 14.4)",
+            "description": "error ratio / 0.001. 1 = budget used up exactly over 28 days; page when both windows exceed 14.4"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "((sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=\"server_error\", synthetic=\"$synthetic\"}[1h])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[1h]))) / 0.001",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "burn 1h"
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "((sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=\"server_error\", synthetic=\"$synthetic\"}[5m])) or vector(0)) / sum(rate({\"graphql.server.operations\", operation=\"products\", outcome=~\"ok|server_error\", synthetic=\"$synthetic\"}[5m]))) / 0.001",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "burn 5m"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "564f4133-df45-4ec8-a191-7e3abd19d01e": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Browse & search: latency SLI, share under 250 ms (target 99%)",
+            "description": ""
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "percentunit",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": 0.95,
+                "softMax": 1,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum(rate({\"graphql.server.operation.duration.bucket\", operation=\"products\", outcome=\"ok\", synthetic=\"$synthetic\", le=\"0.25\"}[5m])) / sum(rate({\"graphql.server.operation.duration.count\", operation=\"products\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m]))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "under 250 ms"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "7ee4844b-c53c-4330-83df-5179475dfd37": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Browse & search: latency p50 / p99",
+            "description": ""
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "s",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "histogram_quantile(0.99, sum by (le) (rate({\"graphql.server.operation.duration.bucket\", operation=\"products\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "p99"
+                        }
+                      },
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "B",
+                          "query": "histogram_quantile(0.50, sum by (le) (rate({\"graphql.server.operation.duration.bucket\", operation=\"products\", outcome=\"ok\", synthetic=\"$synthetic\"}[5m])))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "p50"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      },
+      "e0e2cb9c-0904-40ef-9c1c-32b7d4210d05": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Browse & search: traffic by outcome (requests/s)",
+            "description": "ok = good, server_error = bad (burns budget), client_error = caller's mistake (excluded)"
+          },
+          "plugin": {
+            "kind": "signoz/TimeSeriesPanel",
+            "spec": {
+              "visualization": {
+                "timePreference": "global_time",
+                "fillSpans": false
+              },
+              "formatting": {
+                "unit": "reqps",
+                "decimalPrecision": "2"
+              },
+              "chartAppearance": {
+                "lineInterpolation": "spline",
+                "showPoints": false,
+                "lineStyle": "solid",
+                "fillMode": "none",
+                "spanGaps": {
+                  "fillOnlyBelow": false,
+                  "fillLessThan": ""
+                }
+              },
+              "axes": {
+                "softMin": null,
+                "softMax": null,
+                "isLogScale": false
+              },
+              "legend": {
+                "position": "bottom",
+                "mode": "list",
+                "customColors": null
+              },
+              "thresholds": null
+            }
+          },
+          "queries": [
+            {
+              "kind": "time_series",
+              "spec": {
+                "plugin": {
+                  "kind": "signoz/CompositeQuery",
+                  "spec": {
+                    "queries": [
+                      {
+                        "type": "promql",
+                        "spec": {
+                          "name": "A",
+                          "query": "sum by (outcome) (rate({\"graphql.server.operations\", operation=\"products\", synthetic=\"$synthetic\"}[5m]))",
+                          "disabled": false,
+                          "step": 0,
+                          "stats": false,
+                          "legend": "{{outcome}}"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          "links": null
+        }
+      }
+    },
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": ""
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/cd988334-f0e5-4d1a-8d87-78cf05afa7cd"
+              }
+            },
+            {
+              "x": 6,
+              "y": 0,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/571a8a46-971c-4706-9fb5-06d01bc51570"
+              }
+            },
+            {
+              "x": 0,
+              "y": 6,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/e2cba9aa-5893-4946-92d0-96d135b07d9d"
+              }
+            },
+            {
+              "x": 6,
+              "y": 6,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/22b67881-1615-4dc7-8bdb-781a3d37c714"
+              }
+            },
+            {
+              "x": 0,
+              "y": 12,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/159b8771-8471-4841-ad4d-5b88563a7b95"
+              }
+            },
+            {
+              "x": 0,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/da6e6481-0421-4804-b625-afc9504bfb75"
+              }
+            },
+            {
+              "x": 6,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/f10fa74e-3844-4ab0-82bf-70adf9b6dc6e"
+              }
+            },
+            {
+              "x": 0,
+              "y": 24,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/564f4133-df45-4ec8-a191-7e3abd19d01e"
+              }
+            },
+            {
+              "x": 6,
+              "y": 24,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/7ee4844b-c53c-4330-83df-5179475dfd37"
+              }
+            },
+            {
+              "x": 0,
+              "y": 30,
+              "width": 6,
+              "height": 6,
+              "content": {
+                "$ref": "#/spec/panels/e0e2cb9c-0904-40ef-9c1c-32b7d4210d05"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "duration": "",
+    "refreshInterval": "",
+    "links": null
+  },
+  "tags": [],
+  "image": "/assets/Icons/eight-ball"
+}
