@@ -17,6 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-018](#inc-018--kubectl-top-fails-metrics-api-not-available) | 2026-10-09 | Kubernetes / EKS add-ons | `kubectl top` fails: `Metrics API not available` | Low | Fix ready |
 | [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Open |
 | [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
 | [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Resolved |
@@ -103,6 +104,96 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-018 – `kubectl top` fails: `Metrics API not available`
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | Bastion, `kubectl top pods`; `terraform/eks-cluster/addons.tf` |
+| **Severity** | Low: no pod CPU/memory from `kubectl`; it would also block HorizontalPodAutoscalers |
+| **Status** | Fix ready: metrics-server EKS add-on added to Terraform; waiting for the `eks-cluster` pipeline apply |
+
+### Summary
+Before a load ramp, `kubectl top pods` was going to be used to watch CPU throttling. It failed with `error: Metrics API not available`. EKS does not install **metrics-server** by default, and the cluster's Terraform only installed the VPC CNI, kube-proxy, CoreDNS, Pod Identity agent and EBS CSI add-ons. AWS publishes metrics-server as a managed EKS add-on, so it was added to `addons.tf` next to the others.
+
+### Background
+- `kubectl top` and HorizontalPodAutoscalers (HPA) read CPU/memory from the **Metrics API** (`metrics.k8s.io`). That API is served by **metrics-server**, which polls each node's kubelet. Without it, the API doesn't exist.
+- This is separate from Prometheus: Prometheus scrapes the same kubelet/cAdvisor data for its own storage (Grafana dashboards), but doesn't serve the Metrics API.
+- EKS installs only the essentials. Everything else is opt-in, as an **EKS add-on** (managed by AWS, upgraded with the cluster), a Helm chart, or plain manifests.
+
+### Timeline
+1. Planning a stepped load test (10 → 25 → 50 → 110 users), watching CPU per pod between steps.
+2. Bastion: `kubectl -n go-micro-shop top pods` → `error: Metrics API not available`; the same for `-n signoz`.
+3. `aws eks list-addons` → no metrics-server.
+4. `aws eks describe-addon-versions --addon-name metrics-server --kubernetes-version 1.36` → available, publisher `eks`, default `v0.9.0-eksbuild.11`.
+5. Added `aws_eks_addon.metrics_server` to `addons.tf`; `terraform fmt -check` and `terraform validate` pass.
+
+### What happened (symptom)
+
+    [ec2-user@bastion]$ kubectl -n go-micro-shop top pods
+    error: Metrics API not available
+    [ec2-user@bastion]$ kubectl -n signoz top pods
+    error: Metrics API not available
+
+### How we got there
+The cluster was built with the minimum add-ons. Nothing needed the Metrics API until now.
+
+### Why (root cause)
+1. `kubectl top` depends on the Metrics API.
+2. The Metrics API is provided by metrics-server.
+3. metrics-server isn't part of a default EKS cluster and wasn't in `addons.tf`.
+
+### Impact
+- No quick CPU/memory view from `kubectl` during load tests.
+- HPA (autoscaling on CPU) would not work: a prerequisite for scaling the gateway.
+- Workaround meanwhile: Prometheus + Grafana (dashboard `17375`) show per-pod CPU/memory from cAdvisor.
+
+### Resolution (step by step)
+1. **Confirm it's missing:** `aws eks list-addons --region eu-north-1 --cluster-name go-microservices-dev`.
+2. **Check that the managed add-on exists** for the cluster version:
+   `aws eks describe-addon-versions --region eu-north-1 --addon-name metrics-server --kubernetes-version 1.36`.
+3. **Add it to Terraform** (diff below), next to the other add-ons, so it's created and destroyed with the cluster.
+4. **Apply through the pipeline:** commit and push, then Jenkins `eks-cluster` → Build with Parameters → `dev` + `apply`. The plan should show `1 to add, 0 to change, 0 to destroy` → Proceed.
+5. **Verify** (bastion, about a minute after apply):
+   ```bash
+   kubectl -n kube-system get deploy metrics-server     # READY
+   kubectl top nodes
+   kubectl -n go-micro-shop top pods
+   ```
+
+### Code / config change
+`terraform/eks-cluster/addons.tf`:
+```hcl
+# Metrics Server: CPU/memory per pod and node for `kubectl top` and for
+# HorizontalPodAutoscalers. Needs nodes to schedule onto.
+resource "aws_eks_addon" "metrics_server" {
+  cluster_name                = aws_eks_cluster.eks.name
+  addon_name                  = "metrics-server"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_node_group.nodes]
+}
+```
+
+### Lessons learned
+- A "minimal" EKS cluster lacks things people assume are built in (metrics-server, an ingress controller, a default StorageClass before the EBS CSI add-on).
+- Prefer the **managed EKS add-on** over a hand-installed Helm chart when one exists: AWS keeps it compatible with the cluster version, and Terraform owns it.
+
+### How to approach it next time
+- `Metrics API not available` → `kubectl get apiservice v1beta1.metrics.k8s.io` (missing, or `False`) → install or fix metrics-server.
+- If it is installed but unavailable: `kubectl -n kube-system logs deploy/metrics-server` (often kubelet TLS or network-policy issues).
+
+### Prevention / follow-up
+- Done: add-on in Terraform.
+- Next: an HPA for `graphql-gateway` (CPU-based) once the load ramp shows the bottleneck.
+
+### References
+- Amazon EKS: [Metrics Server add-on](https://docs.aws.amazon.com/eks/latest/userguide/metrics-server.html); [EKS add-ons](https://docs.aws.amazon.com/eks/latest/userguide/eks-add-ons.html).
+- Kubernetes: [Resource metrics pipeline](https://kubernetes.io/docs/tasks/debug/debug-cluster/resource-metrics-pipeline/).
 
 ---
 

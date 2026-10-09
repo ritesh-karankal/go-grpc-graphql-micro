@@ -31,6 +31,17 @@ resource "aws_eks_addon" "coredns" {
   depends_on = [aws_eks_node_group.nodes]
 }
 
+# Metrics Server: CPU/memory per pod and node for `kubectl top` and for
+# HorizontalPodAutoscalers. Needs nodes to schedule onto.
+resource "aws_eks_addon" "metrics_server" {
+  cluster_name                = aws_eks_cluster.eks.name
+  addon_name                  = "metrics-server"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_node_group.nodes]
+}
+
 # IAM Role for the EBS CSI controller, assumed through Pod Identity
 resource "aws_iam_role" "ebs_csi" {
   name = "${local.cluster_name}-ebs-csi-role"
