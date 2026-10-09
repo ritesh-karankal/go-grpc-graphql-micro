@@ -17,11 +17,12 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
-| [INC-021](#inc-021--quality-gate-error-again-go-only-credits-coverage-to-the-package-under-test) | 2026-10-09 | Jenkins / SonarQube | Quality gate `ERROR` again: Go only credits coverage to the package under test | Medium | Fix ready |
-| [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Fix ready |
-| [INC-019](#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested) | 2026-10-09 | SigNoz / capacity | SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested | Medium | Fix ready |
+| [INC-022](#inc-022--clickhouse-busy-logging-itself-internal-system-logs-outweigh-real-telemetry-20x) | 2026-10-09 | SigNoz / ClickHouse | ClickHouse busy logging itself: internal system logs outweigh real telemetry ~20x | Medium | Fix ready |
+| [INC-021](#inc-021--quality-gate-error-again-go-only-credits-coverage-to-the-package-under-test) | 2026-10-09 | Jenkins / SonarQube | Quality gate `ERROR` again: Go only credits coverage to the package under test | Medium | Resolved |
+| [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Deployed, verifying |
+| [INC-019](#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested) | 2026-10-09 | SigNoz / capacity | SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested | Medium | Resolved |
 | [INC-018](#inc-018--kubectl-top-fails-metrics-api-not-available) | 2026-10-09 | Kubernetes / EKS add-ons | `kubectl top` fails: `Metrics API not available` | Low | Fix ready |
-| [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Fix ready |
+| [INC-017](#inc-017--connection-reset-by-peer-during-a-rollout-pods-exit-without-draining) | 2026-10-09 | Kubernetes / Go services | `Connection reset by peer` during a rollout: pods exit without draining | Medium | Deployed, verifying |
 | [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Resolved |
 | [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Resolved |
 | [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
@@ -110,6 +111,110 @@ Docs, source files or issues used to confirm the cause.
 
 ---
 
+## INC-022 – ClickHouse busy logging itself: internal system logs outweigh real telemetry ~20x
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | SigNoz's ClickHouse (`chi-signoz-clickhouse-cluster-0-0-0`); `k8s/monitoring/signoz-values.yaml` (`clickhouse.files`) |
+| **Severity** | Medium: ClickHouse used ~770–860m CPU constantly, most of one node, to write data nobody reads |
+| **Status** | Fix ready: noisy system logs disabled via a ClickHouse config file; waiting for `helm upgrade` |
+
+### Summary
+After fixing ZooKeeper (INC-019), ClickHouse still used **~860m CPU** with light traffic. Its `system.part_log` showed what it was writing: in 5 minutes, **402k rows to `system.trace_log`** (ClickHouse's own sampling profiler), 82k to `asynchronous_metric_log`, 75k to `zookeeper_log`, 33k to `processors_profile_log`, against only ~20–28k rows per table of actual SigNoz telemetry. Every insert creates parts that must be merged, so most of ClickHouse's CPU went into **logging about itself**. SigNoz doesn't use these tables, so a small config file disables them.
+
+### Background
+- ClickHouse keeps internal **system log tables** (`system.*_log`): query history, profiler samples, server metrics, ZooKeeper requests, and more. They're enabled by default and are flushed to disk every few seconds as regular MergeTree tables.
+- In a MergeTree table, every insert creates a **part**, and background **merges** combine parts. Lots of small inserts means lots of merge work, which shows up as constant CPU.
+- `trace_log` is filled by the **query profiler** (stack samples, by default every second per thread) and by memory profiling, so it's the biggest by far.
+- Config files in `config.d/` are merged in **alphabetical order**. An element with `remove="1"` deletes that section from the config.
+- The SigNoz chart passes extra files through `clickhouse.files` to the ClickHouse operator, which mounts them into `config.d/`. The operator's own defaults are named `01-clickhouse-*.xml`.
+
+### Timeline
+1. INC-019 fixed: ZooKeeper at 203Mi. ClickHouse still at 863m CPU / 1151Mi.
+2. Asked ClickHouse what it was doing (bastion, `clickhouse-client` inside the pod):
+   - `system.merges`: merging `system.metric_log`;
+   - active parts per table: the top 8 tables were all `system.*` (trace_log 17, metric_log 14, zookeeper_log 12, …);
+   - rows written in the last 5 minutes (`system.part_log`): table below.
+3. Checked the chart: system logs come from the operator's `01-clickhouse-*.xml` files; custom files can be added through `clickhouse.files`.
+4. Added `config.d/z_disable_noisy_system_logs.xml`; rendered the chart: the file is included alongside the chart's defaults.
+
+### What happened (symptom)
+
+    signoz   chi-signoz-clickhouse-cluster-0-0-0   863m   1151Mi
+
+Rows written in 5 minutes (`system.part_log`, `event_type = 'NewPart'`):
+
+| Table | Rows | Needed by SigNoz? |
+|---|---|---|
+| `system.trace_log` | **402,662** | no (ClickHouse profiler) |
+| `system.asynchronous_metric_log` | 82,494 | no |
+| `system.zookeeper_log` | 74,612 | no |
+| `system.processors_profile_log` | 33,401 | no |
+| `signoz_traces.signoz_index_v3` | 27,944 | **yes** (spans) |
+| `signoz_metrics.metadata` / `samples_v4` / aggregates | 18–23k each | **yes** (metrics) |
+
+### How we got there
+The chart's ClickHouse runs with ClickHouse's default system logging, which is tuned for debugging ClickHouse itself, not for a small cluster running an observability backend.
+
+### Why (root cause)
+1. ClickHouse's default system logs are on, including the per-second query profiler (`trace_log`).
+2. They generate far more rows than our telemetry volume.
+3. Every flush creates parts, and merging them costs CPU continuously, whether or not anyone uses the data.
+
+### Impact
+- ~0.8 cores spent constantly on unused data: most of node A's CPU, and the main reason that node ran at 57–88%.
+- Extra disk writes and storage on the 20Gi ClickHouse volume (bounded by the logs' TTLs).
+
+### Resolution (step by step)
+1. **Ask ClickHouse what it's doing** (bastion):
+   ```bash
+   CH="kubectl -n signoz exec chi-signoz-clickhouse-cluster-0-0-0 -- clickhouse-client -q"
+   $CH "SELECT database, table, round(elapsed,1), round(progress,2) FROM system.merges ORDER BY elapsed DESC LIMIT 10"
+   $CH "SELECT database, table, count() FROM system.parts WHERE active GROUP BY database, table ORDER BY count() DESC LIMIT 10"
+   $CH "SELECT database, table, sum(rows) FROM system.part_log WHERE event_type='NewPart' AND event_time > now() - INTERVAL 5 MINUTE GROUP BY database, table ORDER BY sum(rows) DESC LIMIT 10"
+   ```
+2. **Disable the noisy logs** in `signoz-values.yaml` (diff below). Keep `query_log` and `part_log`: cheap, and `part_log` is what found this.
+3. **Render and check** that the file is included:
+   `helm template signoz signoz/signoz --version 0.145.0 -f k8s/monitoring/signoz-values.yaml` → `ClickHouseInstallation.spec.configuration.files` contains `config.d/z_disable_noisy_system_logs.xml`.
+4. **Apply** (bastion): `helm upgrade signoz signoz/signoz -n signoz --version 0.145.0 -f k8s/monitoring/signoz-values.yaml`. ClickHouse restarts; telemetry pauses briefly (exporters retry).
+5. **Verify** after ~10 minutes: re-run the `part_log` query → no new rows for the disabled tables; `kubectl -n signoz top pods` → ClickHouse CPU clearly lower; node A's CPU down.
+6. Optional cleanup of old data: `$CH "TRUNCATE TABLE system.trace_log"` (and the others). Otherwise their TTLs remove it.
+
+### Code / config change
+`k8s/monitoring/signoz-values.yaml`:
+```yaml
+clickhouse:
+  files:
+    config.d/z_disable_noisy_system_logs.xml: |
+      <clickhouse>
+        <trace_log remove="1"/>
+        <asynchronous_metric_log remove="1"/>
+        <zookeeper_log remove="1"/>
+        <processors_profile_log remove="1"/>
+        <metric_log remove="1"/>
+      </clickhouse>
+```
+
+### Lessons learned
+- An observability backend has its own observability overhead. Measure what *it* spends resources on, not just your app.
+- Defaults are tuned for the software's own debugging, not for your workload. Check what's on.
+- `system.part_log` answers "where do my writes go?" in one query.
+
+### How to approach it next time
+1. High idle CPU on a database → look at background work first (merges, compactions, vacuum), not just queries.
+2. ClickHouse specifically: `system.merges`, `system.parts`, `system.part_log` (writes per table), `system.query_log` (heavy queries).
+3. Compare the volume of internal tables with the volume of real data.
+
+### Prevention / follow-up
+- Re-check node A's CPU after the change. If ClickHouse is still the top consumer under load, consider a dedicated node for SigNoz.
+
+### References
+- ClickHouse: [System tables](https://clickhouse.com/docs/en/operations/system-tables); [`trace_log`](https://clickhouse.com/docs/en/operations/system-tables/trace_log); [Configuration files — `remove` attribute](https://clickhouse.com/docs/en/operations/configuration-files).
+- Altinity ClickHouse operator: [custom configuration files](https://github.com/Altinity/clickhouse-operator/blob/master/docs/chi-examples/05-settings-05-files-nested.yaml).
+
+---
+
 ## INC-021 – Quality gate `ERROR` again: Go only credits coverage to the package under test
 
 | | |
@@ -117,7 +222,7 @@ Docs, source files or issues used to confirm the cause.
 | **Date** | 2026-10-09 |
 | **Where** | Jenkins `backend` › **Quality Check**; `jenkins/Jenkinsfile-Backend` (Go Unit Tests stage); commit `fix: graceful shutdown and gRPC load balancing` |
 | **Severity** | Medium: the gate blocked the graceful-shutdown and load-balancing fixes from deploying |
-| **Status** | Fix ready: `-coverpkg` in the pipeline + tests for the new code; local estimate 88% |
+| **Status** | Resolved: build #8 passed the quality gate and deployed |
 
 ### Summary
 The build for the graceful-shutdown and gRPC load-balancing fixes (INC-017, INC-020) failed the quality gate again, this time with a coverage report present. A local estimate of the new code's coverage gave **42%**, for two reasons. **(1)** `go test -coverprofile` only credits coverage to the *package being tested*. `order`'s tests run `account.NewClient` and `catalog.NewClient` (including the new `round_robin` lines), but that counted for nothing, so the client files showed 0%. **(2)** The new `ListenGRPC` wiring and some `lifecycle` branches really had no tests. Fixed with `-coverpkg` (cross-package credit) plus targeted tests. Duplicated helper code in the four `main.go` files was also consolidated into `telemetry.Flush`.
@@ -167,6 +272,7 @@ A change that touched many packages with one or two lines each, with the coverag
    - `telemetry/telemetry_test.go`: `Flush` calls shutdown with a deadline and doesn't fail on a flush error.
 4. Remove duplication: `telemetry.Flush` replaces four identical `flush()` functions.
 5. Pipeline (diff below), then push and run `backend`. Expect `Quality gate is 'OK'`.
+   Result: build #8 passed the gate, pushed `:8` images, and Argo CD deployed them.
 
 ### Code / config change
 `jenkins/Jenkinsfile-Backend`:
@@ -286,7 +392,7 @@ The standard Kubernetes Service, used with gRPC clients on default settings.
 | **Date** | 2026-10-09 |
 | **Where** | `k8s/monitoring/signoz-values.yaml` (`clickhouse.resources`, `clickhouse.zookeeper`) |
 | **Severity** | Medium: ZooKeeper could be OOM-killed (SigNoz then stops storing telemetry); one node ran at up to 88% CPU |
-| **Status** | Fix ready: values updated and rendered; waiting for `helm upgrade` |
+| **Status** | Resolved: `helm upgrade` applied; ZooKeeper runs with a 256 MB heap at ~203Mi (was 432Mi of 512Mi) |
 
 ### Summary
 The 110-user load test showed one node at **78–88% CPU** while the other sat at ~25%. The app pods only used ~500m in total. `kubectl top pods -A` showed the heaviest workload is **SigNoz's ClickHouse**: **767m CPU and 1.2Gi memory even after the test ended**, while its request in our values was only 200m / 1Gi. The same look found a real bug: **ZooKeeper's Java heap is 1024 MB by default, but our values capped its container at 512Mi**. It was at 432Mi (84%), so one busy period away from being killed. Fixed in `signoz-values.yaml`: `heapSize: 256`, and ClickHouse requests raised to what was measured.
@@ -341,6 +447,13 @@ The SigNoz values were sized by guesswork before there was real traffic. The Zoo
    ```
    Telemetry pauses briefly while they restart; the services' exporters retry (see INC-013).
 6. **Verify:** `kubectl -n signoz top pods` → ZooKeeper well under 512Mi; SigNoz shows new data.
+   Result after the upgrade:
+   ```
+   $ kubectl -n signoz get pod signoz-zookeeper-0 -o jsonpath='{...ZOO_HEAP_SIZE...}'
+   256
+   signoz-zookeeper-0                    35m   203Mi      # was 432Mi
+   chi-signoz-clickhouse-cluster-0-0-0   863m  1151Mi     # CPU still high: see follow-up
+   ```
 
 ### Code / config change
 `k8s/monitoring/signoz-values.yaml`:
@@ -379,6 +492,7 @@ The SigNoz values were sized by guesswork before there was real traffic. The Zoo
 ### Prevention / follow-up
 - Optional: a dedicated node (or node group with a taint) for SigNoz, so observability load can't starve the app.
 - Optional: trace sampling (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`, e.g. 0.25) if traffic grows.
+- Open question: ClickHouse still used ~860m CPU after the fix. Check whether that's ingestion during a load run or a constant background cost (merges, ClickHouse's own `system.*_log` tables).
 
 ### References
 - Kubernetes: [Resource requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).

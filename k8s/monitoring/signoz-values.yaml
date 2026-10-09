@@ -29,6 +29,20 @@ clickhouse:
       memory: 1536Mi
     limits:
       memory: 3Gi
+  # ClickHouse's own debug logs wrote ~20x more rows than our telemetry (5 min:
+  # trace_log 402k, asynchronous_metric_log 82k, zookeeper_log 75k, processors_profile_log
+  # 33k vs ~28k spans), and every insert means merges: most of its idle CPU. SigNoz
+  # doesn't use them. query_log and part_log stay (cheap, useful for debugging).
+  # The "z_" prefix makes this file load after the operator's 01-clickhouse-*.xml.
+  files:
+    config.d/z_disable_noisy_system_logs.xml: |
+      <clickhouse>
+        <trace_log remove="1"/>
+        <asynchronous_metric_log remove="1"/>
+        <zookeeper_log remove="1"/>
+        <processors_profile_log remove="1"/>
+        <metric_log remove="1"/>
+      </clickhouse>
   zookeeper:
     # The chart's default Java heap is 1024 MB, which can't fit a 512Mi container
     # limit (the pod would be OOM-killed). 256 MB is plenty for one ClickHouse node.
