@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -115,4 +117,40 @@ func waitForPort(t *testing.T, addr string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("server on %s did not start", addr)
+}
+
+func TestServeErrorsAreReturned(t *testing.T) {
+	// A listener that is already closed makes Serve fail straight away
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lis.Close()
+	if err := ServeGRPC(context.Background(), grpc.NewServer(), lis); err == nil {
+		t.Error("ServeGRPC on a closed listener: want error, got nil")
+	}
+
+	// An address that is already taken makes ListenAndServe fail
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	if err := ServeHTTP(context.Background(), &http.Server{Addr: busy.Addr().String()}); err == nil {
+		t.Error("ServeHTTP on a busy address: want error, got nil")
+	}
+}
+
+func TestSignalContextCancelledBySIGTERM(t *testing.T) {
+	ctx, stop := SignalContext()
+	defer stop()
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("context not cancelled by SIGTERM")
+	}
 }

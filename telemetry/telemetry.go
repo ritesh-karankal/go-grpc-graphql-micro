@@ -174,3 +174,13 @@ func serveMetrics(registry *prometheus.Registry) (*http.Server, error) {
 
 	return srv, nil
 }
+
+// Flush sends buffered spans, metrics and logs, waiting at most 5 seconds. Call it last,
+// after the servers have drained, so telemetry from the final requests isn't lost.
+func Flush(shutdown func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		slog.Error("Failed to flush telemetry", "err", err)
+	}
+}

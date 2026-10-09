@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"time"
@@ -39,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer flush(shutdown)
+	defer telemetry.Flush(shutdown)
 
 	s, err := NewGraphQLServer(cfg.AccountURL, cfg.CatalogURL, cfg.OrderURL)
 	if err != nil {
@@ -80,14 +79,6 @@ func main() {
 	log.Println("Stopped")
 }
 
-// flush sends buffered spans, metrics and logs before the process exits.
-func flush(shutdown func(context.Context) error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := shutdown(ctx); err != nil {
-		log.Println("Failed to flush telemetry:", err)
-	}
-}
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

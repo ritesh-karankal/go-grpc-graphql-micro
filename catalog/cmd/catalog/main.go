@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"time"
 
@@ -31,7 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer flush(shutdown)
+	defer telemetry.Flush(shutdown)
 
 	var r catalog.Repository
 	retry.ForeverSleep(2*time.Second, func(_ int) (err error) {
@@ -58,13 +57,4 @@ func main() {
 		log.Println(err)
 	}
 	log.Println("Stopped")
-}
-
-// flush sends buffered spans, metrics and logs before the process exits.
-func flush(shutdown func(context.Context) error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := shutdown(ctx); err != nil {
-		log.Println("Failed to flush telemetry:", err)
-	}
 }

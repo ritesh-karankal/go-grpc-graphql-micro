@@ -17,6 +17,7 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-021](#inc-021--quality-gate-error-again-go-only-credits-coverage-to-the-package-under-test) | 2026-10-09 | Jenkins / SonarQube | Quality gate `ERROR` again: Go only credits coverage to the package under test | Medium | Fix ready |
 | [INC-020](#inc-020--grpc-traffic-not-balanced-across-replicas) | 2026-10-09 | gRPC / Kubernetes Services | gRPC traffic not balanced across replicas | Medium | Fix ready |
 | [INC-019](#inc-019--signoz-sizing-zookeeper-heap-larger-than-its-memory-limit-clickhouse-under-requested) | 2026-10-09 | SigNoz / capacity | SigNoz sizing: ZooKeeper heap larger than its memory limit, ClickHouse under-requested | Medium | Fix ready |
 | [INC-018](#inc-018--kubectl-top-fails-metrics-api-not-available) | 2026-10-09 | Kubernetes / EKS add-ons | `kubectl top` fails: `Metrics API not available` | Low | Fix ready |
@@ -106,6 +107,97 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-021 – Quality gate `ERROR` again: Go only credits coverage to the package under test
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | Jenkins `backend` › **Quality Check**; `jenkins/Jenkinsfile-Backend` (Go Unit Tests stage); commit `fix: graceful shutdown and gRPC load balancing` |
+| **Severity** | Medium: the gate blocked the graceful-shutdown and load-balancing fixes from deploying |
+| **Status** | Fix ready: `-coverpkg` in the pipeline + tests for the new code; local estimate 88% |
+
+### Summary
+The build for the graceful-shutdown and gRPC load-balancing fixes (INC-017, INC-020) failed the quality gate again, this time with a coverage report present. A local estimate of the new code's coverage gave **42%**, for two reasons. **(1)** `go test -coverprofile` only credits coverage to the *package being tested*. `order`'s tests run `account.NewClient` and `catalog.NewClient` (including the new `round_robin` lines), but that counted for nothing, so the client files showed 0%. **(2)** The new `ListenGRPC` wiring and some `lifecycle` branches really had no tests. Fixed with `-coverpkg` (cross-package credit) plus targeted tests. Duplicated helper code in the four `main.go` files was also consolidated into `telemetry.Flush`.
+
+### Background
+- `go test -coverprofile` instruments **only the packages being tested** by default. Code in package B that a test in package A executes counts as covered only with `-coverpkg=<list>`, which instruments the listed packages for every test binary.
+- SonarQube applies the 80% condition to **new code**. Small changes spread across many files (a few wiring lines each) easily drop below it when each line lives in a package whose own tests don't execute it.
+- SonarQube's *Sonar way* gate also limits **duplicated lines on new code** (≤ 3%). Copy-pasting the same helper into several files counts against it.
+
+### Timeline
+1. Commit `fix: graceful shutdown and gRPC load balancing` pushed and built.
+2. Quality Check: `Quality gate is 'ERROR'`.
+3. Local estimate of new-code coverage (`coverage.out` blocks matched to the commit's `git diff -U0` lines, test and `main.go` files excluded): **21/50 = 42%**.
+
+   | File | Covered / new lines |
+   |---|---|
+   | `account/client.go`, `catalog/client.go`, `order/client.go` | 0/3 each |
+   | `account/server.go`, `catalog/server.go` | 0/2 each |
+   | `order/server.go` | 0/4 |
+   | `lifecycle/lifecycle.go` | 21/33 |
+4. The client lines *are* executed by `order`'s `PostOrder` tests, which construct real `account` and `catalog` clients. Not credited because of per-package instrumentation.
+5. Added `-coverpkg`, tests for `ListenGRPC` (start, cancel, clean return), `lifecycle` error branches and SIGTERM handling, and `telemetry.Flush`. Moved the four copies of `flush()` into `telemetry.Flush`.
+6. New estimate: **49/56 = 88%**.
+
+### What happened (symptom)
+
+    SonarQube task '<task>' status is 'SUCCESS'
+    SonarQube task '<task>' completed. Quality gate is 'ERROR'
+
+### How we got there
+A change that touched many packages with one or two lines each, with the coverage set-up from INC-016 (per-package `-coverprofile`).
+
+### Why (root cause)
+1. Per-package coverage didn't credit cross-package test execution, so the client changes counted as untested.
+2. The new `ListenGRPC` signatures/wiring had no direct tests.
+3. Some `lifecycle` branches (error returns, signal handling) weren't exercised.
+
+### Impact
+- The deploy of INC-017/INC-020 was blocked until fixed. Nothing running was affected.
+
+### Resolution (step by step)
+1. Estimate new-code coverage locally first (as in INC-016), so you know *which* files are short.
+2. Check whether "uncovered" lines are executed by tests elsewhere. If yes, the fix is `-coverpkg`, not more tests.
+3. Add tests where code is genuinely untested:
+   - `account/listen_test.go`, `catalog/listen_test.go`, `order/listen_test.go`: `ListenGRPC` with an already-cancelled context starts and returns `nil` (drained).
+   - `lifecycle_test.go`: `ServeGRPC` on a closed listener and `ServeHTTP` on a busy address return errors; `SignalContext` is cancelled by a real `SIGTERM` to the test process.
+   - `telemetry/telemetry_test.go`: `Flush` calls shutdown with a deadline and doesn't fail on a flush error.
+4. Remove duplication: `telemetry.Flush` replaces four identical `flush()` functions.
+5. Pipeline (diff below), then push and run `backend`. Expect `Quality gate is 'OK'`.
+
+### Code / config change
+`jenkins/Jenkinsfile-Backend`:
+```diff
+-                sh 'go test -coverprofile=coverage.out ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
++                sh '''
++                    PKGS="./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/... ./lifecycle/..."
++                    go test -coverpkg=$(echo $PKGS | tr ' ' ',') -coverprofile=coverage.out $PKGS
++                '''
+ ...
+-                          -Dsonar.sources=account,catalog,order,graphql,telemetry \
++                          -Dsonar.sources=account,catalog,order,graphql,telemetry,lifecycle \
+```
+
+### Lessons learned
+- In Go, "covered" means "covered by tests *of this package*" unless you pass `-coverpkg`. For a multi-package service, cross-package coverage is the more truthful number.
+- Many small cross-cutting changes are the hardest case for a new-code coverage gate. Add tests for the new wiring in the same commit.
+- Shared helpers belong in a shared package; copies in every `main.go` add duplication and untestable code.
+
+### How to approach it next time
+1. Gate `ERROR` → SonarQube failed conditions (coverage? duplication?).
+2. Coverage: list uncovered new lines per file; for each, is it executed by any test? Yes → `-coverpkg`. No → write a test.
+3. Re-estimate locally before pushing again.
+
+### Prevention / follow-up
+- Done: `-coverpkg` for all backend packages; tests for the new wiring.
+- Optional: a test for `lifecycle`'s forced stop after `DrainTimeout` (needs the timeout to be configurable).
+
+### References
+- Go: [`go help testflag` — `-coverpkg`](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
+- SonarQube: [Go test coverage](https://docs.sonarsource.com/sonarqube-server/latest/analyzing-source-code/test-coverage/go-test-coverage/).
 
 ---
 
