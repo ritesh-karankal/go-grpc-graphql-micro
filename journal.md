@@ -17,6 +17,8 @@ Entries are newest first. Self-inflicted mistakes (tooling slips, wrong docs) ar
 
 | ID | Date | Area | Title | Severity | Status |
 |---|---|---|---|---|---|
+| [INC-016](#inc-016--backend-quality-gate-error-sonarqube-saw-0-coverage-on-new-code) | 2026-10-09 | Jenkins / SonarQube | Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code | Medium | Fix ready |
+| [INC-015](#inc-015--sonarqube-ui-on-port-9000-keeps-loading-ip-allowlist-out-of-date) | 2026-10-09 | Jenkins / AWS SG | SonarQube UI on port 9000 keeps loading: IP allowlist out of date | Low | Fix ready |
 | [INC-014](#inc-014--catalog-service-would-crash-on-an-order-with-an-unknown-product-id) | 2026-10-09 | Catalog / Elasticsearch | catalog-service would crash on an order with an unknown product ID | High | Resolved |
 | [INC-013](#inc-013--signoz-shows-youre-not-sending-any-data-yet) | 2026-10-09 | SigNoz / OpenTelemetry | SigNoz shows "You're not sending any data yet" | Medium | Resolved |
 | [INC-012](#inc-012--signoz-ui-not-reachable-load-balancer-created-as-internal) | 2026-10-09 | SigNoz / AWS LB Controller | SigNoz UI not reachable: load balancer created as `internal` | Medium | Resolved |
@@ -100,6 +102,216 @@ What stops it happening again (code, docs, checks), and anything still to do.
 ### References
 Docs, source files or issues used to confirm the cause.
 ```
+
+---
+
+## INC-016 – Backend quality gate `ERROR`: SonarQube saw 0% coverage on new code
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | Jenkins job `backend` › stage **Quality Check** (`waitForQualityGate abortPipeline: true`); SonarQube project `go-grpc-graphql-micro-backend`; `jenkins/Jenkinsfile-Backend` |
+| **Severity** | Medium: the gate blocked the build (by design), so the SLI/metrics change could not ship |
+| **Status** | Fix ready: pipeline sends a coverage report; `PostOrder` tested; new-code coverage ~87% locally; waiting for the next `backend` run |
+
+### Summary
+The first backend build after the "SLI-ready errors and GraphQL operation metrics" commit stopped at **Quality Check**: SonarQube's quality gate returned `ERROR`. Its per-file view showed every new line as **uncovered**, 92 lines across the six changed files, although the commit added unit tests. The pipeline ran `go test` but **never produced or uploaded a coverage report**, so SonarQube counted new-code coverage as 0%, below the *Sonar way* gate's 80%. Earlier builds had passed only because there was no "new code" yet. Fix: generate `coverage.out` in the test stage, pass it to the scanner, exclude startup wiring from coverage, and add the missing tests for `order-service`'s `PostOrder`.
+
+### Background
+- A **quality gate** is a set of conditions SonarQube checks after each analysis. The default gate, *Sonar way*, checks **new code only** (code changed since the baseline), including **coverage ≥ 80%**, duplications ≤ 3%, A ratings, and hotspots reviewed.
+- On a project's **first analysis** everything is "overall code" and nothing is "new", so new-code conditions pass trivially. That's why the first backend builds passed with no tests at all.
+- SonarQube **doesn't run tests**. It only reads a coverage report the build produces. For Go that is `go test -coverprofile=coverage.out`, passed as `-Dsonar.go.coverage.reportPaths=coverage.out`. Without it, every new executable line counts as uncovered.
+- `waitForQualityGate abortPipeline: true` fails the Jenkins stage when the gate is `ERROR`, so the images are never built or pushed. The gate does what it's meant to do.
+
+### Timeline
+1. Pushed commit `feat: SLI-ready errors and GraphQL operation metrics` (gRPC status codes, gateway operation metrics, a catalog crash fix, and the repo's first unit tests).
+2. Ran `backend`. Tests passed; then **Quality Check**:
+   `SonarQube task '…' completed. Quality gate is 'ERROR'`.
+3. The SonarQube UI didn't load (see INC-015, IP allowlist). After fixing access, the project's new-code coverage view listed uncovered lines per file: `operation_metrics.go 50`, `order/server.go 20`, `catalog/server.go 8`, `account/server.go 8`, `graphql/main.go 4`, `catalog/repository.go 2`. Every changed file, nothing covered.
+4. Read the Jenkinsfile: `go test` without `-coverprofile`, and no `sonar.go.coverage.reportPaths` → SonarQube had no coverage data.
+5. Estimated locally what SonarQube would see with a report (coverage of changed lines only): **71%**, still below 80%. Biggest gap: `order/server.go`'s `PostOrder`, 8 of 29 lines covered, because it calls the account and catalog services and had no test.
+6. Added a `PostOrder` test with fake account and catalog gRPC servers on localhost (7 cases), excluded `main.go`/`cmd/` from coverage, and added the coverage report to the pipeline. Local estimate: **87%**.
+
+### What happened (symptom)
+
+    Checking status of SonarQube task '<task>' on server 'sonar-server'
+    SonarQube task '<task>' status is 'IN_PROGRESS'
+    SonarQube task '<task>' status is 'SUCCESS'
+    SonarQube task '<task>' completed. Quality gate is 'ERROR'
+
+SonarQube, uncovered lines on new code:
+
+| File | Uncovered new lines |
+|---|---|
+| `graphql/operation_metrics.go` | 50 |
+| `order/server.go` | 20 |
+| `catalog/server.go` | 8 |
+| `account/server.go` | 8 |
+| `graphql/main.go` | 4 |
+| `catalog/repository.go` | 2 |
+| all other files | 0 (not changed) |
+
+### How we got there
+The first commit with real changes to existing code since the project's first analysis. The CI pipeline had been set up before there were any tests, so it never produced coverage.
+
+### Why (root cause)
+1. *Sonar way* requires **≥ 80% coverage on new code**.
+2. The commit added about 150 new executable lines.
+3. Jenkins ran `go test` **without** `-coverprofile`, and the scanner had no `sonar.go.coverage.reportPaths`, so SonarQube had **no coverage data** and treated every new line as uncovered (0%).
+4. Even with a report, coverage would have been ~71%: `PostOrder`'s error paths had no tests, and `graphql/main.go` (startup wiring) counted as coverable.
+
+### Impact
+- The backend build stopped before Docker build and ECR push, so the SLI and metrics change wasn't deployed. Nothing running was affected.
+- About 30 minutes (including INC-015).
+
+### Resolution (step by step)
+1. **Read the gate result** in SonarQube → project → **Overview** (failed conditions) and the coverage measures per file. All changed files uncovered → no coverage report.
+2. **Check the pipeline:** no `-coverprofile`, no `sonar.go.coverage.reportPaths`.
+3. **Estimate new-code coverage locally** before changing anything, so you know whether a report alone is enough:
+   ```bash
+   go test -coverprofile=coverage.out ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...
+   go tool cover -func=coverage.out | tail -1        # overall
+   ```
+   (Per-changed-line coverage was computed by matching `coverage.out` blocks to `git diff -U0` line ranges.) Result: 71%, not enough.
+4. **Test the real gap:** `order/post_order_test.go` runs fake account and catalog gRPC servers on `127.0.0.1:0` and drives `PostOrder` through the real clients: order placed, empty order, unknown account, account service failing, catalog unreachable, no existing products, save fails. All 7 pass.
+5. **Exclude startup wiring** from coverage (`**/main.go`, `**/cmd/**`): it only connects components and is exercised by running the service, not by unit tests.
+6. **Pipeline change** (diff below). Local estimate of new-code coverage: **87%** (≥ 80%).
+7. **Verify:** push, run `backend` → Quality Check `Quality gate is 'OK'`; SonarQube shows a non-zero coverage on new code.
+
+### Code / config change
+`jenkins/Jenkinsfile-Backend`:
+```diff
+         stage('Go Unit Tests') {
+             steps {
+-                sh 'go test ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
++                // coverage.out is read by the SonarQube scan (sonar.go.coverage.reportPaths)
++                sh 'go test -coverprofile=coverage.out ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
+             }
+         }
+ ...
+                           -Dsonar.exclusions=**/pb/**,**/generated.go,**/models_gen.go \
++                          -Dsonar.go.coverage.reportPaths=coverage.out \
++                          -Dsonar.coverage.exclusions=**/main.go,**/cmd/** \
+```
+New test: `order/post_order_test.go`.
+
+### Lessons learned
+- SonarQube only knows coverage the build tells it about. "Tests pass" and "coverage reported" are separate things.
+- A quality gate that passed on day one may only have passed because there was no new code yet. The first real change is the first real test of the gate.
+- Fix a coverage gate by **testing the untested logic**, not by lowering the threshold. Excluding pure wiring (`main.go`) is fine; excluding business logic is not.
+- Estimating locally first avoids a slow cycle of "push → wait 10 minutes → gate fails again".
+
+### How to approach it next time
+1. Quality gate `ERROR` → SonarQube project → Overview → read the **failed conditions** (coverage, duplication, ratings, hotspots).
+2. Coverage at exactly 0% on new code → the report is missing or not found (check `sonar.go.coverage.reportPaths` and the scanner log for "coverage").
+3. Coverage low but non-zero → open **Measures → Coverage → Uncovered lines on new code**, and write tests for the biggest files first.
+4. Paths in `coverage.out` are Go import paths; SonarQube maps them with `go.mod`. If coverage stays 0 with a report present, check the scanner log for "unable to resolve" warnings.
+
+### Prevention / follow-up
+- Done: coverage report in the pipeline; `PostOrder` tests.
+- Follow-up: the same for the frontend pipeline when it gets tests (`lcov` report → `sonar.javascript.lcov.reportPaths`).
+- Follow-up: archive `coverage.out` as a Jenkins artifact, or publish an HTML report.
+
+### References
+- SonarQube: [Test coverage for Go](https://docs.sonarsource.com/sonarqube-server/latest/analyzing-source-code/test-coverage/go-test-coverage/); [Quality gates — Sonar way](https://docs.sonarsource.com/sonarqube-server/latest/instance-administration/analysis-functions/quality-gates/).
+- Go: [`go test -coverprofile`](https://pkg.go.dev/cmd/go#hdr-Testing_flags).
+
+---
+
+## INC-015 – SonarQube UI on port 9000 keeps loading: IP allowlist out of date
+
+| | |
+|---|---|
+| **Date** | 2026-10-09 |
+| **Where** | Browser → `http://<JENKINS_IP>:9000` (SonarQube); `terraform/jenkins-server` security group `jenkins_sg` (`admin_cidrs`) |
+| **Severity** | Low: blocked access to the SonarQube UI (needed to read a failed quality gate); Jenkins and the pipelines were unaffected |
+| **Status** | Fix ready: `terraform.tfvars` updated, `terraform plan` shows 1 in-place change; waiting for `terraform apply` |
+
+### Summary
+The SonarQube UI stopped loading: the browser just spun until it timed out. Jenkins on port 8080 on the same server answered immediately. The server's security group lets **anyone** reach 8080 (GitHub webhooks need it) but only **one admin IP** reach 9000. The laptop's public IP had **changed** since the server was created (home ISPs reassign IPs), so its connections to 9000 were silently dropped. The fix is to put the new IP in `terraform.tfvars` and apply, so the code and AWS stay in sync.
+
+### Background
+- The Jenkins server's security group (`terraform/jenkins-server`) has two inbound rules:
+
+  | Port | Service | Allowed from | Why |
+  |---|---|---|---|
+  | 8080 | Jenkins | `0.0.0.0/0` | GitHub webhooks come from GitHub's IPs |
+  | 9000 | SonarQube | `admin_cidrs` (our IP `/32`) | SonarQube's UI should not be public |
+
+- A security group **drops** traffic it doesn't allow. It doesn't reject it, so the client gets no answer and waits until it times out. "Takes forever to load" is the typical symptom; "connection refused" would mean something else.
+- Home and mobile internet IPs are **dynamic**: the ISP can assign a new one after a router restart or after some hours or days. Every IP allowlist (this security group, and the `loadBalancerSourceRanges` of the Argo CD, Prometheus, Grafana and SigNoz load balancers) then stops matching.
+
+### Timeline
+1. Day 1: Jenkins server created with `admin_cidrs = ["<OLD_IP>/32"]`. SonarQube reachable.
+2. Day 2: the backend pipeline failed its quality gate. Opened SonarQube to see which condition failed; the page kept loading.
+3. From the laptop: `curl :9000` → no answer after 10 s; `curl :8080` → `403` in 0.5 s (Jenkins up; 403 is its login page for anonymous requests).
+4. Read the security group: port 9000 allows only `<OLD_IP>/32`. Current laptop IP: different (same first two octets, different last two).
+5. Updated `terraform.tfvars`; `terraform plan` → `0 to add, 1 to change, 0 to destroy` (in-place update of the 9000 rule).
+
+### What happened (symptom)
+Browser: `http://<JENKINS_IP>:9000` loads forever, then times out.
+
+    $ curl -s -o /dev/null -w '%{http_code} in %{time_total}s' --max-time 10 http://<JENKINS_IP>:9000/
+    000 in 10.0s        # curl exit 28: timeout, nothing answered
+    $ curl -s -o /dev/null -w '%{http_code} in %{time_total}s' --max-time 10 http://<JENKINS_IP>:8080/
+    403 in 0.54s        # Jenkins answers (anonymous → 403)
+
+### How we got there
+The laptop's ISP assigned a new public IP between yesterday's setup and today.
+
+### Why (root cause)
+1. Port 9000 is allowlisted to a single `/32`, our IP at creation time.
+2. The laptop's public IP changed.
+3. The security group dropped packets from the new IP, so the browser waited with no response.
+
+### Impact
+- SonarQube UI unreachable, so the quality-gate failure couldn't be inspected.
+- Jenkins, its connection to SonarQube (`localhost:9000`), and the pipelines were unaffected. Jenkins reaches SonarQube locally, not through the security group.
+- Likely the same for the other allowlisted UIs (Argo CD, Prometheus, Grafana, SigNoz) once they're used from the new IP.
+
+### Resolution (step by step)
+1. **Tell "dropped" from "down":** a `curl` timeout on one port while another port on the same host answers points at a firewall/allowlist, not at the service.
+2. **Compare the IPs** (laptop):
+   ```bash
+   curl -s https://checkip.amazonaws.com                         # current IP
+   aws ec2 describe-security-groups --region eu-north-1 --group-ids <SG_ID> \
+     --query 'SecurityGroups[0].IpPermissions[?FromPort==`9000`].IpRanges[].CidrIp'
+   ```
+   Different → allowlist out of date.
+3. **Update Terraform**, not the console, so the code stays the source of truth:
+   ```bash
+   cd terraform/jenkins-server
+   MY=$(curl -s https://checkip.amazonaws.com)
+   sed -i -E "s|^admin_cidrs *=.*|admin_cidrs = [\"${MY}/32\"]|" terraform.tfvars    # git-ignored file
+   terraform plan      # expect: 0 to add, 1 to change, 0 to destroy
+   terraform apply
+   ```
+4. **Update the Kubernetes load balancer allowlists the same way** (bastion), for each UI that hangs:
+   ```bash
+   kubectl -n <ns> patch svc <svc> -p '{"spec":{"loadBalancerSourceRanges":["<NEW_IP>/32"]}}'
+   ```
+5. **Verify:** `curl -s -o /dev/null -w '%{http_code}\n' http://<JENKINS_IP>:9000/` → `200` (or a redirect to the login page).
+
+### Code / config change
+Only the git-ignored `terraform/jenkins-server/terraform.tfvars` (`admin_cidrs`). No code change.
+
+### Lessons learned
+- A timeout is a firewall problem until proven otherwise; a refusal or error page means the service itself answered.
+- Allowlisting a home IP is fragile. It's fine for a short-lived demo, but expect to update it.
+- Change the allowlist through Terraform rather than the AWS console, otherwise the next `terraform apply` silently puts the old IP back.
+
+### How to approach it next time
+1. Something IP-restricted "loads forever"? Run `curl https://checkip.amazonaws.com` first and compare it with the allowlist.
+2. Check another port on the same host to separate "host down" from "port blocked".
+3. Fix the source of truth (tfvars or the Service manifest), then apply.
+
+### Prevention / follow-up
+- Optional: reach admin UIs without public allowlists at all: **SSM port forwarding** through the bastion (`aws ssm start-session --document-name AWS-StartPortForwardingSessionToRemoteHost ...`), or a VPN. No IP to keep updated, and nothing exposed to the internet.
+- Optional: a small script that updates all allowlists (Terraform + the four Kubernetes Services) from `checkip` in one go.
+
+### References
+- AWS: [Security group rules](https://docs.aws.amazon.com/vpc/latest/userguide/security-group-rules.html); [Session Manager port forwarding](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-sessions-start.html#sessions-remote-port-forwarding).
+- Kubernetes: [`loadBalancerSourceRanges`](https://kubernetes.io/docs/concepts/services-networking/service/#aws-nlb-support).
 
 ---
 

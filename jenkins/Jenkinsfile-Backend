@@ -37,7 +37,8 @@ pipeline {
 
         stage('Go Unit Tests') {
             steps {
-                sh 'go test ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
+                // coverage.out is read by the SonarQube scan (sonar.go.coverage.reportPaths)
+                sh 'go test -coverprofile=coverage.out ./account/... ./catalog/... ./order/... ./graphql/... ./telemetry/...'
             }
         }
 
@@ -50,6 +51,8 @@ pipeline {
                           -Dsonar.projectKey=go-grpc-graphql-micro-backend \
                           -Dsonar.sources=account,catalog,order,graphql,telemetry \
                           -Dsonar.exclusions=**/pb/**,**/generated.go,**/models_gen.go \
+                          -Dsonar.go.coverage.reportPaths=coverage.out \
+                          -Dsonar.coverage.exclusions=**/main.go,**/cmd/** \
                           -Dsonar.tests=. \
                           -Dsonar.test.inclusions=**/*_test.go
                     '''
